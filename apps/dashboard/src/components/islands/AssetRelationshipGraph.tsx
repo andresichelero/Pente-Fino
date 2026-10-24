@@ -23,7 +23,7 @@ export default function AssetRelationshipGraph({
   apiBaseUrl = "http://127.0.0.1:8000",
 }: AssetRelationshipGraphProps) {
   const [selectedSlug, setSelectedSlug] = useState<string>(
-    initialSlug || (programs[0]?.slug ?? "nmap-scanme")
+    initialSlug || programs[0]?.slug || ""
   );
   const [viewMode, setViewMode] = useState<"graph" | "table">("graph");
   const [inspectorTab, setInspectorTab] = useState<"summary" | "dns" | "http" | "json">("summary");
@@ -49,10 +49,15 @@ export default function AssetRelationshipGraph({
         return;
       }
       fetchAssetGraphAndList(selectedSlug);
+    } else {
+      setGraphData({ nodes: [], edges: [] });
+      setSelectedNode(null);
+      setAssets([]);
     }
   }, [selectedSlug]);
 
   async function fetchAssetGraphAndList(slug: string) {
+    if (!slug) return;
     setLoading(true);
     try {
       const [graphRes, assetsRes] = await Promise.all([
@@ -65,62 +70,25 @@ export default function AssetRelationshipGraph({
           setGraphData(gData);
           const firstAsset = gData.nodes.find((n: any) => n.node_type === "asset") || gData.nodes[0];
           setSelectedNode(firstAsset);
+        } else {
+          setGraphData({ nodes: [], edges: [] });
+          setSelectedNode(null);
         }
+      } else {
+        setGraphData({ nodes: [], edges: [] });
+        setSelectedNode(null);
       }
       if (assetsRes.ok) {
         const aData = await assetsRes.json();
         setAssets(Array.isArray(aData) ? aData : aData.assets || []);
+      } else {
+        setAssets([]);
       }
     } catch {
-      // Offline fallback below
+      setGraphData({ nodes: [], edges: [] });
+      setSelectedNode(null);
+      setAssets([]);
     } finally {
-      setGraphData((curr: any) => {
-        if (curr?.nodes?.length > 0) return curr;
-        const fallbackNodes = [
-          {
-            id: `program:${slug}`,
-            label: slug,
-            node_type: "program",
-            metadata: { slug, platform: "hackerone", state: "active" },
-          },
-          {
-            id: "asset:scanme.nmap.org",
-            label: "scanme.nmap.org",
-            node_type: "asset",
-            scope_state: "in_scope_explicit",
-            asset_type: "domain",
-            metadata: { canonical_key: "scanme.nmap.org", scopable: true, findings_count: 1 },
-          },
-          {
-            id: "ip:45.33.32.156",
-            label: "45.33.32.156",
-            node_type: "observed_ip",
-            scope_state: "dns_metadata_only",
-            asset_type: "ip",
-            metadata: { ip: "45.33.32.156", scopable: false, dns_metadata_only: true },
-          },
-          {
-            id: "tech:apache",
-            label: "apache",
-            node_type: "technology",
-            metadata: { is_pruned_cdn: false, category: "application_stack" },
-          },
-          {
-            id: "tech:cloudflare",
-            label: "cloudflare",
-            node_type: "technology",
-            metadata: { is_pruned_cdn: true, category: "edge_cdn_waf" },
-          },
-        ];
-        const fallbackEdges = [
-          { source: `program:${slug}`, target: "asset:scanme.nmap.org", relation: "HAS_ASSET" },
-          { source: "asset:scanme.nmap.org", target: "ip:45.33.32.156", relation: "RESOLVES_TO" },
-          { source: "asset:scanme.nmap.org", target: "tech:apache", relation: "RUNS_TECH" },
-          { source: "asset:scanme.nmap.org", target: "tech:cloudflare", relation: "RUNS_TECH" },
-        ];
-        setSelectedNode(fallbackNodes[1]);
-        return { program_slug: slug, nodes: fallbackNodes, edges: fallbackEdges };
-      });
       setLoading(false);
     }
   }
@@ -129,6 +97,10 @@ export default function AssetRelationshipGraph({
   const positionedGraph = useMemo(() => {
     const rawNodes: any[] = graphData?.nodes || [];
     const rawEdges: any[] = graphData?.edges || [];
+
+    if (rawNodes.length === 0) {
+      return { nodes: [], edges: [], posMap: {}, canvasHeight: 460 };
+    }
 
     const nodes = rawNodes.map((n) => (n.data ? { ...n.data, node_type: n.data.type || n.node_type } : n));
     const edges = rawEdges.map((e) => (e.data ? e.data : e));
@@ -188,6 +160,29 @@ export default function AssetRelationshipGraph({
       ["http", "http_probe"].includes(o.observation_type)
     );
   }, [selectedAssetDetails]);
+
+  if (programs.length === 0) {
+    return (
+      <div class="card card-pad py-16 text-center space-y-4">
+        <div class="w-12 h-12 mx-auto rounded-full bg-[#11161f] border border-[#1b2230] flex items-center justify-center text-[#738196]">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-semibold text-white">Nenhum programa cadastrado</h3>
+          <p class="text-xs text-[#738196] mt-1 max-w-sm mx-auto">
+            Cadastre um programa para visualizar o mapeamento de ativos e o grafo topológico.
+          </p>
+        </div>
+        <div>
+          <a href="/programs" class="btn btn-primary">
+            + Cadastrar Programa
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div class="space-y-4">
@@ -276,7 +271,15 @@ export default function AssetRelationshipGraph({
                 </div>
               )}
 
-              <svg
+              {positionedGraph.nodes.length === 0 ? (
+                <div class="flex items-center justify-center min-h-[460px] text-center p-8 space-y-2">
+                  <div>
+                    <div class="text-xs font-mono text-[#738196]">Nenhum ativo mapeado para este programa</div>
+                    <p class="text-[11px] text-[#4b5563] mt-1">Cadastre ativos ou execute uma descoberta para gerar o grafo.</p>
+                  </div>
+                </div>
+              ) : (
+                <svg
                 viewBox={`0 0 880 ${positionedGraph.canvasHeight}`}
                 class="w-full select-none block"
                 style={{
@@ -491,6 +494,7 @@ export default function AssetRelationshipGraph({
                   );
                 })}
               </svg>
+              )}
             </div>
           </div>
 

@@ -20,11 +20,11 @@ export default function LiveScanRunner({
   wsBaseUrl = "ws://127.0.0.1:8000",
 }: LiveScanRunnerProps) {
   const [programSlug, setProgramSlug] = useState<string>(
-    initialSlug || (programs[0]?.slug ?? "nmap-scanme")
+    initialSlug || programs[0]?.slug || ""
   );
   const [assets, setAssets] = useState<any[]>(initialAssets);
   const [assetKey, setAssetKey] = useState<string>(
-    initialAssets[0]?.canonical_key ?? "scanme.nmap.org"
+    initialAssets[0]?.canonical_key || ""
   );
   const [selectedSeverities, setSelectedSeverities] = useState<string[]>([
     "critical",
@@ -311,15 +311,38 @@ export default function LiveScanRunner({
     ? "STAGE 1 READY · AWAITING EXECUTION"
     : "IDLE · SELECT TARGET & SIMULATE PLAN";
 
+  if (programs.length === 0) {
+    return (
+      <div class="card card-pad py-16 text-center space-y-4">
+        <div class="w-12 h-12 mx-auto rounded-full bg-[#11161f] border border-[#1b2230] flex items-center justify-center text-[#738196]">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-semibold text-white">Nenhum programa cadastrado</h3>
+          <p class="text-xs text-[#738196] mt-1 max-w-sm mx-auto">
+            Cadastre um programa de Bug Bounty para planejar e executar varreduras com segurança.
+          </p>
+        </div>
+        <div>
+          <a href="/programs" class="btn btn-primary">
+            + Cadastrar Programa
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div class="space-y-3">
-      {/* Hero Strip Progress Bar (ds41 style) */}
+      {/* Hero Strip Progress Bar */}
       <div class="card card-pad">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div class="flex items-center gap-2">
             <span class="pill pill-emerald">[DetectionPlanner → HardenedNucleiRunner]</span>
             <span class="text-xs font-mono font-semibold text-[#e6edf3]">
-              {assetKey || "scanme.nmap.org"}
+              {assetKey || "Nenhum alvo selecionado"}
             </span>
             <span class="text-[11px] font-mono text-[#7d8590]">({programSlug})</span>
           </div>
@@ -350,7 +373,7 @@ export default function LiveScanRunner({
               class="input"
             >
               {programs.length === 0 ? (
-                <option value={programSlug}>{programSlug}</option>
+                <option value={programSlug}>{programSlug || "Nenhum"}</option>
               ) : (
                 programs.map((p) => (
                   <option key={p.slug} value={p.slug}>
@@ -368,7 +391,7 @@ export default function LiveScanRunner({
               list="scoped-assets-datalist"
               value={assetKey}
               onInput={(e) => setAssetKey((e.target as HTMLInputElement).value)}
-              placeholder="scanme.nmap.org"
+              placeholder="ex: app.exemplo.com"
               class="input"
               required
             />

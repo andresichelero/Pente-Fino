@@ -25,36 +25,9 @@ const cdnProviders = ["cloudflare", "akamai", "fastly", "incapsula", "sucuri", "
 ---
 
 <BaseLayout
-  title="DetectionPlanner & Scan Runner"
-  subtitle="Poda Inteligente de Templates por Borda CDN/WAF, Containers Efêmeros Isolados & Telemetria WebSocket"
+  title="Varreduras"
   activeNav="scans"
 >
-  <!-- Compact 1-Line Planner & Sandbox Guardrail Strip -->
-  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
-    <div class="flex items-center gap-2 flex-wrap font-mono text-xs">
-      <span class="w-2 h-2 rounded-full bg-[#fbbf24]"></span>
-      <span class="font-semibold text-white">Edge CDN/WAF Pruning</span>
-      <details class="hint">
-        <summary>?</summary>
-        <div>
-          O DetectionPlanner usa defer(TemplateCatalog.raw_yaml) e poda tags genéricas de borda CDN/WAF antes de despachar o container efêmero (--read-only, --cap-drop=ALL, pids_limit=128).
-        </div>
-      </details>
-      <span class="text-[#263042]">·</span>
-      {
-        cdnProviders.map((cdn) => (
-          <span class="pill text-[#fbbf24]">-{cdn}</span>
-        ))
-      }
-    </div>
-
-    <div class="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
-      <span class="pill text-[#34d399]">--cap-drop=ALL</span>
-      <span class="pill text-[#34d399]">--read-only</span>
-      <span class="pill text-[#22d3ee]">defer(raw_yaml) &lt;15ms</span>
-    </div>
-  </section>
-
   <!-- Interactive Island: LiveScanRunner -->
   <section>
     <LiveScanRunner

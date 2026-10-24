@@ -12,33 +12,9 @@ const activeSlug =
 ---
 
 <BaseLayout
-  title="Programs & 7-Tier Scope Governance"
-  subtitle="Normalização IDNA2008/UTS46, Guarda Anti-SSRF e Simulador Interativo de Precedência em 7 Camadas"
+  title="Programas & Escopo"
   activeNav="programs"
 >
-  <!-- Compact 1-Line 7-Tier Precedence Strip with Popover -->
-  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
-    <div class="flex items-center gap-2.5 flex-wrap font-mono text-xs">
-      <span class="w-2 h-2 rounded-full bg-[#34d399]"></span>
-      <span class="font-semibold text-white">7-Tier Precedence Pipeline</span>
-      <details class="hint">
-        <summary>?</summary>
-        <div>
-          1. Program/Snapshot Active → 2. SSRF/Private IP Guard → 3. Explicit DENY → 4. Denied Paths/Ports → 5. Explicit ALLOW → 6. Wildcard/CIDR Derived → 7. Fail-Closed Default DENY.
-        </div>
-      </details>
-      <span class="text-[#263042]">·</span>
-      <span class="pill text-[#34d399]">T1 Snapshot</span>
-      <span class="pill text-[#f87171]">T2 SSRF Guard</span>
-      <span class="pill text-[#f87171]">T3 Explicit DENY</span>
-      <span class="pill text-[#fbbf24]">T4 Path/Port</span>
-      <span class="pill text-[#34d399]">T5 Exact ALLOW</span>
-      <span class="pill text-[#22d3ee]">T6 Wildcard</span>
-      <span class="pill">T7 Default DENY</span>
-    </div>
-    <span class="pill text-[#34d399]">IDNA2008 / UTS46</span>
-  </section>
-
   <!-- Interactive Island: ScopeLiveTester -->
   <section>
     <ScopeLiveTester

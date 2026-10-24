@@ -23,7 +23,7 @@ export default function ScopeLiveTester({
 }: ScopeLiveTesterProps) {
   const [programs, setPrograms] = useState<any[]>(initialPrograms);
   const [selectedSlug, setSelectedSlug] = useState<string>(
-    initialSlug || (initialPrograms[0]?.slug ?? "nmap-scanme")
+    initialSlug || initialPrograms[0]?.slug || ""
   );
   const [rules, setRules] = useState<any[]>([]);
   const [loadingRules, setLoadingRules] = useState<boolean>(false);
@@ -41,14 +41,14 @@ export default function ScopeLiveTester({
   // New Scope Rule Form
   const [ruleAction, setRuleAction] = useState<string>("allow");
   const [ruleAssetType, setRuleAssetType] = useState<string>("wildcard_domain");
-  const [rulePattern, setRulePattern] = useState<string>("*.scanme.nmap.org");
+  const [rulePattern, setRulePattern] = useState<string>("");
   const [rulePriority, setRulePriority] = useState<number>(100);
   const [rulePorts, setRulePorts] = useState<string>("80, 443");
   const [ruleDeniedPaths, setRuleDeniedPaths] = useState<string>("/admin, /logout");
   const [addingRule, setAddingRule] = useState<boolean>(false);
 
   // Live Scope Simulator
-  const [targetInput, setTargetInput] = useState<string>("https://scanme.nmap.org/index.html");
+  const [targetInput, setTargetInput] = useState<string>("");
   const [portInput, setPortInput] = useState<string>("");
   const [pathInput, setPathInput] = useState<string>("");
   const [evaluating, setEvaluating] = useState<boolean>(false);
@@ -63,12 +63,9 @@ export default function ScopeLiveTester({
 
   useEffect(() => {
     if (selectedSlug) {
-      // Clear stale verdict & messages when switching program
       setVerdict(null);
       setStatusMessage(null);
-      if (selectedSlug !== initialSlug || !initialRules || initialRules.length === 0) {
-        fetchScopeRules(selectedSlug);
-      }
+      fetchScopeRules(selectedSlug);
     }
   }, [selectedSlug]);
 
@@ -249,40 +246,45 @@ export default function ScopeLiveTester({
         scope_state: "out_of_scope",
         precedence_tier: "EXPLICIT_DENY",
         matched_pattern: "RFC1918 / Loopback / Cloud Metadata SSRF Guard",
-        reason: "SSRF Hard-Block: Private, Loopback, or IMDSv2 (169.254.169.254) IP range forbidden.",
+        reason: "SSRF Hard-Block: Faixa de IP Privado, Loopback ou IMDSv2 (169.254.169.254) bloqueada.",
         resolved_ip: lower.includes("169.254.169.254") ? "169.254.169.254" : "127.0.0.1",
         target_canonical: tgt,
       });
-    } else if (lower.includes("scanme.nmap.org") && !lower.includes("admin.scanme.nmap.org")) {
-      setVerdict({
-        allowed: true,
-        scope_state: "in_scope_explicit",
-        precedence_tier: "EXPLICIT_ALLOW",
-        matched_pattern: "scanme.nmap.org",
-        reason: "Matched explicit allow rule for scanme.nmap.org on allowed port.",
-        resolved_ip: "45.33.32.156",
-        target_canonical: tgt.startsWith("http") ? tgt : `https://${tgt}/`,
-      });
-    } else if (lower.includes("admin.")) {
-      setVerdict({
-        allowed: false,
-        scope_state: "out_of_scope",
-        precedence_tier: "EXPLICIT_DENY",
-        matched_pattern: "admin.*",
-        reason: "Matched explicit deny rule for administrative subdomain.",
-        resolved_ip: null,
-        target_canonical: tgt,
-      });
     } else {
-      setVerdict({
-        allowed: false,
-        scope_state: "out_of_scope",
-        precedence_tier: "UNKNOWN_DENY",
-        matched_pattern: null,
-        reason: "Target did not match any explicit or wildcard allow rule (Fail-Closed default).",
-        resolved_ip: null,
-        target_canonical: tgt,
-      });
+      const matchedDeny = rules.find((r) => r.action === "deny" && (r.pattern && lower.includes(r.pattern.replace("*.", "").toLowerCase())));
+      const matchedAllow = rules.find((r) => r.action === "allow" && (r.pattern && lower.includes(r.pattern.replace("*.", "").toLowerCase())));
+
+      if (matchedDeny) {
+        setVerdict({
+          allowed: false,
+          scope_state: "out_of_scope",
+          precedence_tier: "EXPLICIT_DENY",
+          matched_pattern: matchedDeny.pattern,
+          reason: `Bloqueado por regra explícita DENY: ${matchedDeny.pattern}`,
+          resolved_ip: null,
+          target_canonical: tgt,
+        });
+      } else if (matchedAllow) {
+        setVerdict({
+          allowed: true,
+          scope_state: matchedAllow.asset_type === "wildcard_domain" ? "in_scope_derived" : "in_scope_explicit",
+          precedence_tier: matchedAllow.asset_type === "wildcard_domain" ? "WILDCARD_ALLOW" : "EXPLICIT_ALLOW",
+          matched_pattern: matchedAllow.pattern,
+          reason: `Permitido por regra ALLOW: ${matchedAllow.pattern}`,
+          resolved_ip: null,
+          target_canonical: tgt.startsWith("http") ? tgt : `https://${tgt}/`,
+        });
+      } else {
+        setVerdict({
+          allowed: false,
+          scope_state: "out_of_scope",
+          precedence_tier: "UNKNOWN_DENY",
+          matched_pattern: null,
+          reason: "Alvo não corresponde a nenhuma regra de inclusão (Padrão Fail-Closed).",
+          resolved_ip: null,
+          target_canonical: tgt,
+        });
+      }
     }
     setEvaluating(false);
   }
@@ -295,6 +297,118 @@ export default function ScopeLiveTester({
   }
 
   const matchedTierId = verdict?.precedence_tier || verdict?.matched_tier || "";
+
+  const renderNewProgramModal = () => (
+    <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div class="card card-pad max-w-md w-full space-y-4">
+        <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
+          <span class="card-title text-white">CADASTRAR NOVO PROGRAMA</span>
+          <button type="button" onClick={() => setShowNewProgramModal(false)} class="text-[#8b98a9] hover:text-white">
+            ✕
+          </button>
+        </div>
+        <form onSubmit={handleCreateProgram} class="space-y-3">
+          <div>
+            <label class="field-label">Slug (Identificador Único)</label>
+            <input
+              type="text"
+              value={newProgSlug}
+              onInput={(e) => setNewProgSlug((e.target as HTMLInputElement).value)}
+              placeholder="ex: acme-corp"
+              class="input"
+              required
+            />
+          </div>
+          <div>
+            <label class="field-label">Nome do Programa</label>
+            <input
+              type="text"
+              value={newProgName}
+              onInput={(e) => setNewProgName((e.target as HTMLInputElement).value)}
+              placeholder="ex: ACME Security Bounty"
+              class="input"
+              required
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="field-label">Plataforma</label>
+              <select
+                value={newProgPlatform}
+                onChange={(e) => setNewProgPlatform((e.target as HTMLSelectElement).value)}
+                class="input"
+              >
+                <option value="hackerone">HackerOne</option>
+                <option value="bugcrowd">Bugcrowd</option>
+                <option value="intigriti">Intigriti</option>
+                <option value="private">Privado / Próprio</option>
+                <option value="lab">Laboratório Local</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Política</label>
+              <select
+                value={newProgPolicy}
+                onChange={(e) => setNewProgPolicy((e.target as HTMLSelectElement).value)}
+                class="input"
+              >
+                <option value="bounty-safe">bounty-safe</option>
+                <option value="passive-only">passive-only</option>
+                <option value="lab-audit">lab-audit</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowNewProgramModal(false)} class="btn">
+              Cancelar
+            </button>
+            <button type="submit" disabled={creatingProgram} class="btn btn-primary">
+              {creatingProgram ? "Cadastrando..." : "Cadastrar Programa"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+
+  if (programs.length === 0) {
+    return (
+      <div class="space-y-4">
+        {statusMessage && (
+          <div class="card px-4 py-2 border-[#22d3ee]/40 text-[#22d3ee] text-xs font-mono flex items-center justify-between">
+            <span>{statusMessage}</span>
+            <button type="button" onClick={() => setStatusMessage(null)} class="text-[#8b98a9] hover:text-white">
+              [x]
+            </button>
+          </div>
+        )}
+        <div class="card card-pad py-16 text-center space-y-4">
+          <div class="w-12 h-12 mx-auto rounded-full bg-[#11161f] border border-[#1b2230] flex items-center justify-center text-[#738196]">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-white">Nenhum programa cadastrado</h3>
+            <p class="text-xs text-[#738196] mt-1 max-w-sm mx-auto">
+              Cadastre seu primeiro programa para definir regras de escopo e simular avaliações.
+            </p>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowNewProgramModal(true)}
+              class="btn btn-primary"
+            >
+              + Novo Programa
+            </button>
+          </div>
+        </div>
+
+        {showNewProgramModal && renderNewProgramModal()}
+      </div>
+    );
+  }
 
   return (
     <div class="space-y-4">
@@ -657,78 +771,7 @@ export default function ScopeLiveTester({
       </div>
 
       {/* Modal: Novo Programa */}
-      {showNewProgramModal && (
-        <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div class="card card-pad max-w-md w-full space-y-4">
-            <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
-              <span class="card-title text-white">CREATE NEW PROGRAM</span>
-              <button type="button" onClick={() => setShowNewProgramModal(false)} class="text-[#8b98a9] hover:text-white">
-                ✕
-              </button>
-            </div>
-            <form onSubmit={handleCreateProgram} class="space-y-3">
-              <div>
-                <label class="field-label">Slug (Unique ID)</label>
-                <input
-                  type="text"
-                  value={newProgSlug}
-                  onInput={(e) => setNewProgSlug((e.target as HTMLInputElement).value)}
-                  placeholder="acme-bounty"
-                  class="input"
-                  required
-                />
-              </div>
-              <div>
-                <label class="field-label">Program Name</label>
-                <input
-                  type="text"
-                  value={newProgName}
-                  onInput={(e) => setNewProgName((e.target as HTMLInputElement).value)}
-                  placeholder="ACME Bug Bounty"
-                  class="input"
-                  required
-                />
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="field-label">Platform</label>
-                  <select
-                    value={newProgPlatform}
-                    onChange={(e) => setNewProgPlatform((e.target as HTMLSelectElement).value)}
-                    class="input"
-                  >
-                    <option value="hackerone">hackerone</option>
-                    <option value="bugcrowd">bugcrowd</option>
-                    <option value="intigriti">intigriti</option>
-                    <option value="private">private</option>
-                    <option value="lab">lab</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label">Policy</label>
-                  <select
-                    value={newProgPolicy}
-                    onChange={(e) => setNewProgPolicy((e.target as HTMLSelectElement).value)}
-                    class="input"
-                  >
-                    <option value="bounty-safe">bounty-safe</option>
-                    <option value="passive-only">passive-only</option>
-                    <option value="lab-audit">lab-audit</option>
-                  </select>
-                </div>
-              </div>
-              <div class="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setShowNewProgramModal(false)} class="btn">
-                  Cancel
-                </button>
-                <button type="submit" disabled={creatingProgram} class="btn btn-primary">
-                  {creatingProgram ? "Creating..." : "Create Program"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {showNewProgramModal && renderNewProgramModal()}
     </div>
   );
 }

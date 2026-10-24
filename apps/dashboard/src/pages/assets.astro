@@ -44,93 +44,90 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
 ---
 
 <BaseLayout
-  title="Assets & Surface Topology Graph"
-  subtitle="Subfinder / DNSX / HTTPX Discovery • Critical IP Invariant (DNS IPs never promoted to scoped Asset)"
+  title="Ativos & Grafo"
   activeNav="assets"
 >
-  <!-- Compact Critical IP Invariant Strip -->
-  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
-    <div class="flex items-center gap-2.5 font-mono text-xs">
-      <span class="w-2 h-2 rounded-full bg-[#22d3ee]"></span>
-      <span class="font-semibold text-white">Critical IP Invariant · Enforced</span>
-      <details class="hint">
-        <summary>?</summary>
-        <div>
-          Endereços IPv4/IPv6 resolvidos via DNS (incluindo bordas multi-tenant Cloudflare/Akamai/Fastly) são persistidos apenas como metadados em Observation(type="dns") e nunca promovidos para Asset(asset_type="ip").
+  {
+    programs.length === 0 ? (
+      <section class="card card-pad py-16 text-center space-y-4">
+        <div class="w-12 h-12 mx-auto rounded-full bg-[#11161f] border border-[#1b2230] flex items-center justify-center text-[#738196]">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+          </svg>
         </div>
-      </details>
-      <span class="text-[#263042]">·</span>
-      <span class="text-[#8b98a9]">DNS A/AAAA records stay strictly in Observation metadata</span>
-    </div>
+        <div>
+          <h3 class="text-sm font-semibold text-white">Nenhum programa cadastrado</h3>
+          <p class="text-xs text-[#738196] mt-1 max-w-sm mx-auto">
+            Cadastre um programa para visualizar o mapeamento de ativos e o grafo topológico.
+          </p>
+        </div>
+        <div>
+          <a href="/programs" class="btn btn-primary">
+            + Cadastrar Programa
+          </a>
+        </div>
+      </section>
+    ) : (
+      <>
+        <!-- 4 Compact ScopeState KPI Cards with Capacity Bars -->
+        <section class="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+          <div class="card card-pad space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="card-title">IN_SCOPE_EXPLICIT</span>
+              <span class="font-mono text-[10px] text-[#34d399]">TIER 5</span>
+            </div>
+            <div class="kpi text-[#34d399]">{countExplicit}</div>
+            <div class="bar text-[#34d399]">
+              <span style={`width: ${Math.max(4, Math.round((countExplicit / totalAssets) * 100))}%`}></span>
+            </div>
+          </div>
 
-    <div class="flex items-center gap-2 font-mono text-[11px] tabular-nums">
-      <span class="pill text-[#22d3ee]">
-        <span>observed_ip</span>
-        <span class="font-semibold text-white">{countObservationIps}</span>
-      </span>
-      <span class="pill text-[#34d399]">
-        <span>promoted_ip_assets</span>
-        <span class="font-semibold">0 (BLOCKED)</span>
-      </span>
-    </div>
-  </section>
+          <div class="card card-pad space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="card-title">IN_SCOPE_DERIVED</span>
+              <span class="font-mono text-[10px] text-[#22d3ee]">TIER 6</span>
+            </div>
+            <div class="kpi text-[#22d3ee]">{countDerived}</div>
+            <div class="bar text-[#22d3ee]">
+              <span style={`width: ${Math.max(4, Math.round((countDerived / totalAssets) * 100))}%`}></span>
+            </div>
+          </div>
 
-  <!-- 4 Compact ScopeState KPI Cards with Capacity Bars -->
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">IN_SCOPE_EXPLICIT</span>
-        <span class="font-mono text-[10px] text-[#34d399]">TIER 5</span>
-      </div>
-      <div class="kpi text-[#34d399]">{countExplicit}</div>
-      <div class="bar text-[#34d399]">
-        <span style={`width: ${Math.max(4, Math.round((countExplicit / totalAssets) * 100))}%`}></span>
-      </div>
-    </div>
+          <div class="card card-pad space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="card-title">CANDIDATE</span>
+              <span class="font-mono text-[10px] text-[#fbbf24]">PASSIVE</span>
+            </div>
+            <div class="kpi text-[#fbbf24]">{countCandidate}</div>
+            <div class="bar text-[#fbbf24]">
+              <span style={`width: ${Math.max(4, Math.round((countCandidate / totalAssets) * 100))}%`}></span>
+            </div>
+          </div>
 
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">IN_SCOPE_DERIVED</span>
-        <span class="font-mono text-[10px] text-[#22d3ee]">TIER 6</span>
-      </div>
-      <div class="kpi text-[#22d3ee]">{countDerived}</div>
-      <div class="bar text-[#22d3ee]">
-        <span style={`width: ${Math.max(4, Math.round((countDerived / totalAssets) * 100))}%`}></span>
-      </div>
-    </div>
+          <div class="card card-pad space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="card-title">OUT_OF_SCOPE</span>
+              <span class="font-mono text-[10px] text-[#f87171]">BLOCKED</span>
+            </div>
+            <div class="kpi text-[#f87171]">{countOut}</div>
+            <div class="bar text-[#f87171]">
+              <span style={`width: ${Math.max(4, Math.round((countOut / totalAssets) * 100))}%`}></span>
+            </div>
+          </div>
+        </section>
 
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">CANDIDATE</span>
-        <span class="font-mono text-[10px] text-[#fbbf24]">PASSIVE</span>
-      </div>
-      <div class="kpi text-[#fbbf24]">{countCandidate}</div>
-      <div class="bar text-[#fbbf24]">
-        <span style={`width: ${Math.max(4, Math.round((countCandidate / totalAssets) * 100))}%`}></span>
-      </div>
-    </div>
-
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">OUT_OF_SCOPE</span>
-        <span class="font-mono text-[10px] text-[#f87171]">BLOCKED</span>
-      </div>
-      <div class="kpi text-[#f87171]">{countOut}</div>
-      <div class="bar text-[#f87171]">
-        <span style={`width: ${Math.max(4, Math.round((countOut / totalAssets) * 100))}%`}></span>
-      </div>
-    </div>
-  </section>
-
-  <!-- Interactive Topological Graph Island -->
-  <section>
-    <AssetRelationshipGraph
-      client:load
-      programs={programs}
-      initialSlug={activeSlug}
-      initialGraph={graphData}
-      initialAssets={assets}
-      apiBaseUrl={API_BASE_URL}
-    />
-  </section>
+        <!-- Interactive Topological Graph Island -->
+        <section>
+          <AssetRelationshipGraph
+            client:load
+            programs={programs}
+            initialSlug={activeSlug}
+            initialGraph={graphData}
+            initialAssets={assets}
+            apiBaseUrl={API_BASE_URL}
+          />
+        </section>
+      </>
+    )
+  }
 </BaseLayout>

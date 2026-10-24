@@ -45,12 +45,12 @@ export default function FindingTriageBoard({
       if (res.ok) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : data.findings || [];
-        if (list.length > 0) {
-          setFindings(list);
-        }
+        setFindings(list);
+      } else {
+        setFindings([]);
       }
     } catch {
-      // Retain initialFindings if API offline
+      setFindings([]);
     }
   }
 
@@ -253,6 +253,14 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
         </div>
       </div>
 
+      {/* Empty State Banner */}
+      {filteredFindings.length === 0 && (
+        <div class="card card-pad py-8 text-center space-y-1">
+          <div class="text-xs font-mono text-[#7d8590]">Nenhum achado registrado</div>
+          <div class="text-[11px] text-[#4b5563]">Execute uma varredura para identificar potenciais vulnerabilidades.</div>
+        </div>
+      )}
+
       {/* Kanban Board View */}
       {viewMode === "kanban" ? (
         <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -267,8 +275,8 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
 
                 <div class="space-y-2 flex-1">
                   {colFindings.length === 0 ? (
-                    <div class="text-[11px] text-[#7d8590]/60 font-mono text-center py-8">
-                      0 in {col.label}
+                    <div class="text-[11px] text-[#7d8590]/50 font-mono text-center py-8">
+                      0
                     </div>
                   ) : (
                     colFindings.map((f) => (
@@ -347,7 +355,14 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
               </tr>
             </thead>
             <tbody>
-              {filteredFindings.map((f) => (
+              {filteredFindings.length === 0 ? (
+                <tr>
+                  <td colSpan={7} class="text-center text-[#7d8590] py-8 font-mono text-xs">
+                    Nenhum achado registrado
+                  </td>
+                </tr>
+              ) : (
+                filteredFindings.map((f) => (
                 <tr key={f.id}>
                   <td>
                     <span class="pill pill-emerald">{f.evidence_level || "E2"}</span>
@@ -398,7 +413,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                     </button>
                   </td>
                 </tr>
-              ))}
+              )))}
             </tbody>
           </table>
         </div>

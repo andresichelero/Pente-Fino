@@ -17,32 +17,19 @@ const [health, programs, templateStats, findings, telemetry] = await Promise.all
   fetchTelemetrySummary(),
 ]);
 
-const activeProgramsCount =
-  programs.filter((p) => p.state === "active").length ||
-  health.programs_count ||
-  programs.length ||
-  1;
-
-const totalScopedAssets =
-  programs.reduce((acc, p) => acc + (p.assets_count || 0), 0) ||
-  health.assets_count ||
-  telemetry.assets_count ||
-  4;
+const activeProgramsCount = programs.filter((p) => p.state === "active").length;
+const totalScopedAssets = programs.reduce((acc, p) => acc + (p.assets_count || 0), 0);
 
 const totalTemplates = templateStats.total || health.template_count || 14107;
 const safeTemplates = templateStats.by_impact_class?.safe_read_only ?? 11520;
-const safeRatioPct = Math.min(100, Math.round((safeTemplates / Math.max(1, totalTemplates)) * 100));
+const safeRatioPct = totalTemplates > 0 ? Math.min(100, Math.round((safeTemplates / totalTemplates) * 100)) : 0;
 
-const validatedE2Count =
-  findings.filter(
-    (f) =>
-      f.status === "validated" ||
-      f.evidence_level === "E2" ||
-      f.evidence_level === "E3"
-  ).length ||
-  health.validated_e2_count ||
-  telemetry.validated_e2_count ||
-  0;
+const validatedE2Count = findings.filter(
+  (f) =>
+    f.status === "validated" ||
+    f.evidence_level === "E2" ||
+    f.evidence_level === "E3"
+).length;
 
 const impactClasses = [
   { key: "safe_read_only", label: "safe_read_only", mode: "BOUNTY-SAFE", method: "GET/HEAD", color: "text-[#34d399]", bar: "bg-[#34d399]" },
@@ -54,81 +41,29 @@ const impactClasses = [
 
 const auditEvents = health.recent_audit_events?.length
   ? health.recent_audit_events
-  : [
-      {
-        sequence: 104,
-        actor: "template-indexer",
-        event_type: "CATALOG_INDEX_VERIFIED",
-        object_type: "template_catalog",
-        object_id: "nuclei-templates-main",
-        payload: { indexed: totalTemplates, policy: "fail-closed-ast" },
-        occurred_at: new Date().toISOString(),
-      },
-      {
-        sequence: 103,
-        actor: "egress-proxy",
-        event_type: "RATE_LIMIT_ENFORCED",
-        object_type: "proxy_policy",
-        object_id: "bounty-safe-v1",
-        payload: { rate_rps: 0.5, ssrf_guard: "enabled", redaction: "[REDACTED]" },
-        occurred_at: new Date(Date.now() - 120000).toISOString(),
-      },
-      {
-        sequence: 102,
-        actor: "scope-engine",
-        event_type: "PRECEDENCE_MATRIX_READY",
-        object_type: "scope_evaluator",
-        object_id: "7-tier-fail-closed",
-        payload: { default_action: "OUT_OF_SCOPE", idna_uts46: true },
-        occurred_at: new Date(Date.now() - 360000).toISOString(),
-      },
-    ];
+  : [];
 ---
 
 <BaseLayout
-  title="Operations Overview"
-  subtitle="Command Center ds41 • 7-Tier Fail-Closed Scope Governance, DetectionPlanner CDN Pruning & Dual-Hash S3 Forensics"
+  title="Overview"
   activeNav="overview"
 >
-  <!-- Hero Strip: Active Pipeline Operation (ds41 style) -->
-  <section class="card card-pad space-y-2.5">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-2.5 font-mono text-xs">
-        <span class="w-2 h-2 rounded-full bg-[#34d399] animate-pulse"></span>
-        <span class="font-semibold text-white">DetectionPlanner · Ready</span>
-        <span class="text-[#738196]">·</span>
-        <span class="text-[#22d3ee]">{programs[0]?.slug || "nmap-scanme"}</span>
-        <span class="text-[#738196]">·</span>
-        <span class="text-[#34d399] font-semibold tabular-nums">100%</span>
-      </div>
+  {
+    programs.length === 0 && (
+      <section class="card card-pad flex flex-wrap items-center justify-between gap-3 border-amber-500/30 bg-amber-950/10">
+        <div class="flex items-center gap-3">
+          <div class="w-2 h-2 rounded-full bg-amber-400"></div>
+          <div>
+            <div class="text-xs font-semibold text-white">Nenhum programa cadastrado</div>
+            <div class="text-[11px] text-[#8b98a9]">Cadastre seu primeiro programa para definir regras de escopo e mapear a superfície de ataque.</div>
+          </div>
+        </div>
+        <a href="/programs" class="btn btn-primary text-xs">+ Cadastrar Programa</a>
+      </section>
+    )
+  }
 
-      <div class="flex items-center gap-2 flex-wrap font-mono text-[11px] tabular-nums">
-        <span class="pill">
-          <span class="text-[#738196]">safe_read_only</span>
-          <span class="text-white font-semibold">{safeTemplates.toLocaleString("en-US")}</span>
-        </span>
-        <span class="pill">
-          <span class="text-[#738196]">CDN pruned</span>
-          <span class="text-[#fbbf24] font-semibold">8 tags</span>
-        </span>
-        <span class="pill">
-          <span class="text-[#738196]">egress</span>
-          <span class="text-[#22d3ee] font-semibold">0.50 req/s</span>
-        </span>
-        <span class="pill">
-          <span class="text-[#738196]">planner</span>
-          <span class="text-[#34d399] font-semibold">{telemetry.planner_latency_ms} ms</span>
-        </span>
-        <a href="/scans" class="btn btn-primary text-xs">Launch Scan →</a>
-      </div>
-    </div>
-
-    <div class="bar text-[#34d399]">
-      <span style="width: 100%"></span>
-    </div>
-  </section>
-
-  <!-- 6x2 Telemetry & KPI Grid with SVG Sparklines & Capacity Bars (ds41 style) -->
+  <!-- 6x2 Telemetry & KPI Grid with SVG Sparklines & Capacity Bars -->
   <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
     <!-- Card 1: Egress Throughput -->
     <div class="card card-pad flex flex-col justify-between space-y-2">
@@ -139,28 +74,28 @@ const auditEvents = health.recent_audit_events?.length
       <div>
         <div class="kpi">{telemetry.rate_limit_rps.toFixed(2)} <span class="text-xs font-normal text-[#8b98a9]">req/s</span></div>
         <div class="text-[11px] num text-[#738196] mt-0.5">
-          burst {telemetry.burst_capacity} · concurrency {telemetry.concurrency_limit}
+          burst {telemetry.burst_capacity} · conc {telemetry.concurrency_limit}
         </div>
       </div>
       <SparklineSVG data={telemetry.rps_series} color="emerald" height={32} min={0} max={0.65} />
     </div>
 
-    <!-- Card 2: 7-Tier Scope Evaluations -->
+    <!-- Card 2: Scope Evaluations -->
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
-        <span class="card-title">SCOPE EVALS</span>
-        <a href="/programs" class="font-mono text-[10px] text-[#22d3ee] hover:underline">7-TIER →</a>
+        <span class="card-title">PROGRAMAS</span>
+        <a href="/programs" class="font-mono text-[10px] text-[#22d3ee] hover:underline">ESCOPO →</a>
       </div>
       <div>
-        <div class="kpi">{activeProgramsCount} <span class="text-xs font-normal text-[#8b98a9]">programs</span></div>
+        <div class="kpi">{activeProgramsCount} <span class="text-xs font-normal text-[#8b98a9]">ativos</span></div>
         <div class="text-[11px] num text-[#738196] mt-0.5">
-          {totalScopedAssets} assets · default DENY
+          {totalScopedAssets} ativos mapeados
         </div>
       </div>
       <SparklineSVG data={telemetry.scope_evals_series} color="cyan" height={32} />
     </div>
 
-    <!-- Card 3: Anti-SSRF & Rebinding Guard -->
+    <!-- Card 3: Anti-SSRF Guard -->
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
         <span class="card-title">SSRF BLOCKS</span>
@@ -179,12 +114,12 @@ const auditEvents = health.recent_audit_events?.length
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
         <span class="card-title">PLANNER TIME</span>
-        <a href="/scans" class="font-mono text-[10px] text-[#34d399] hover:underline">DEFER SQL →</a>
+        <a href="/scans" class="font-mono text-[10px] text-[#34d399] hover:underline">RUNNER →</a>
       </div>
       <div>
         <div class="kpi">{telemetry.planner_latency_ms} <span class="text-xs font-normal text-[#8b98a9]">ms</span></div>
         <div class="text-[11px] num text-[#738196] mt-0.5">
-          best 8.2ms · target &lt;15ms
+          latência de planejamento
         </div>
       </div>
       <SparklineSVG data={telemetry.planner_ms_series} color="emerald" height={32} min={5} max={15} />
@@ -193,8 +128,8 @@ const auditEvents = health.recent_audit_events?.length
     <!-- Card 5: AST Template Catalog Capacity -->
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
-        <span class="card-title">AST CATALOG</span>
-        <a href="/templates" class="font-mono text-[10px] text-[#22d3ee] hover:underline">EXPLORE →</a>
+        <span class="card-title">TEMPLATES</span>
+        <a href="/templates" class="font-mono text-[10px] text-[#22d3ee] hover:underline">CATÁLOGO →</a>
       </div>
       <div>
         <div class="kpi">{totalTemplates.toLocaleString("en-US")}</div>
@@ -216,13 +151,13 @@ const auditEvents = health.recent_audit_events?.length
     <!-- Card 6: Validated E2 Forensic Findings -->
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
-        <span class="card-title">E2 FORENSICS</span>
-        <a href="/findings" class="font-mono text-[10px] text-[#a78bfa] hover:underline">TRIAGE →</a>
+        <span class="card-title">ACHADOS E2</span>
+        <a href="/findings" class="font-mono text-[10px] text-[#a78bfa] hover:underline">TRIAGEM →</a>
       </div>
       <div>
-        <div class="kpi">{validatedE2Count} <span class="text-xs font-normal text-[#8b98a9]">validated</span></div>
+        <div class="kpi">{validatedE2Count} <span class="text-xs font-normal text-[#8b98a9]">validados</span></div>
         <div class="text-[11px] num text-[#738196] mt-0.5">
-          {findings.length} total · dual-sha256
+          {findings.length} no total
         </div>
       </div>
       <SparklineSVG data={telemetry.db_latency_ms_series} color="purple" height={32} />
@@ -342,52 +277,54 @@ const auditEvents = health.recent_audit_events?.length
     </div>
   </section>
 
-  <!-- Append-Only Audit Events Table (SESSION BENCHMARKS pattern) -->
+  <!-- Audit Events Section -->
   <section class="card overflow-hidden">
     <div class="px-4 py-3 border-b border-[#1b2230] flex items-center justify-between">
-      <div class="flex items-center gap-2">
-        <span class="card-title">AUDIT TRAIL · APPEND-ONLY POSTGRESQL LEDGER</span>
-        <details class="hint">
-          <summary>?</summary>
-          <div>Triggers PostgreSQL bloqueiam UPDATE e DELETE na tabela audit_events.</div>
-        </details>
-      </div>
-      <span class="pill text-[#34d399]">IMMUTABLE</span>
+      <span class="card-title">EVENTOS RECENTES</span>
+      <span class="pill text-[#34d399]">AUDITORIA</span>
     </div>
 
-    <div class="overflow-x-auto">
-      <table class="dtable num">
-        <thead>
-          <tr>
-            <th>Seq</th>
-            <th>Timestamp</th>
-            <th>Actor</th>
-            <th>Event Type</th>
-            <th>Target Object</th>
-            <th>Payload</th>
-          </tr>
-        </thead>
-        <tbody>
-          {
-            auditEvents.map((ev) => (
+    {
+      auditEvents.length === 0 ? (
+        <div class="p-8 text-center text-xs text-[#738196] font-mono">
+          Nenhum evento recente
+        </div>
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="dtable num">
+            <thead>
               <tr>
-                <td class="text-[#34d399] font-semibold">#{ev.sequence}</td>
-                <td class="text-[#738196]">{ev.occurred_at}</td>
-                <td class="text-[#22d3ee]">{ev.actor}</td>
-                <td>
-                  <span class="pill text-white">{ev.event_type}</span>
-                </td>
-                <td class="text-[#e6edf3]">
-                  {ev.object_type}:{ev.object_id}
-                </td>
-                <td class="text-[#8b98a9] max-w-md truncate">
-                  {JSON.stringify(ev.payload)}
-                </td>
+                <th>Seq</th>
+                <th>Data / Hora</th>
+                <th>Ator</th>
+                <th>Evento</th>
+                <th>Objeto</th>
+                <th>Payload</th>
               </tr>
-            ))
-          }
-        </tbody>
-      </table>
-    </div>
+            </thead>
+            <tbody>
+              {
+                auditEvents.map((ev) => (
+                  <tr>
+                    <td class="text-[#34d399] font-semibold">#{ev.sequence}</td>
+                    <td class="text-[#738196]">{ev.occurred_at}</td>
+                    <td class="text-[#22d3ee]">{ev.actor}</td>
+                    <td>
+                      <span class="pill text-white">{ev.event_type}</span>
+                    </td>
+                    <td class="text-[#e6edf3]">
+                      {ev.object_type}:{ev.object_id}
+                    </td>
+                    <td class="text-[#8b98a9] max-w-md truncate">
+                      {JSON.stringify(ev.payload)}
+                    </td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      )
+    }
   </section>
 </BaseLayout>
