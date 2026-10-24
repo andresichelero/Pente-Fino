@@ -8,11 +8,13 @@ from pentefino_runner.config import (
     RunConfig,
     RunResult,
     VolumeMount,
+    validate_image_digest,
 )
 from pentefino_runner.exceptions import (
     ContainerEngineNotFoundError,
     ContainerExecutionError,
     ContainerTimeoutError,
+    InvalidImageDigestError,
     RunnerError,
 )
 from pentefino_runner.runner import EphemeralContainerRunner, EphemeralRunner
@@ -32,4 +34,6 @@ __all__ = [
     "ContainerEngineNotFoundError",
     "ContainerExecutionError",
     "ContainerTimeoutError",
+    "InvalidImageDigestError",
+    "validate_image_digest",
 ]

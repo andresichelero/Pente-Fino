@@ -84,9 +84,7 @@ export default function LiveProxyStreamer({
                   rate_limit: payload.rate_limit || `${rateLimitRps.toFixed(2)} req/s`,
                   user_agent: payload.user_agent || "Mozilla/5.0 [Cloaked]",
                   redacted_headers: payload.redacted_headers || ["Authorization: [REDACTED]"],
-                  sha256:
-                    payload.sha256 ||
-                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  sha256: payload.sha256 || "",
                 },
                 ...prev.slice(0, 49),
               ]);
@@ -128,7 +126,7 @@ export default function LiveProxyStreamer({
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
         <div class="card card-pad flex flex-col justify-between">
           <div class="flex items-center justify-between">
-            <span class="kpi-label">VALKEY TOKEN-BUCKET</span>
+            <span class="kpi-label">LIMITADOR DE TAXA (VALKEY)</span>
             <span class="pill pill-cyan">ACTIVE</span>
           </div>
           <div class="my-1.5">
@@ -157,22 +155,31 @@ export default function LiveProxyStreamer({
           </div>
           <div class="my-1.5">
             <div class="kpi-value text-[#ef4444]">{blockedCount}</div>
-            <div class="kpi-sub">RFC1918 · 169.254.169.254 · fail-closed</div>
+            <div class="kpi-sub">RFC1918 · 169.254.169.254 · Regras de rede & IP</div>
           </div>
           <SparklineSVG data={ssrfSeries} color="crimson" height={34} />
         </div>
 
         <div class="card card-pad flex flex-col justify-between">
           <div class="flex items-center justify-between">
-            <span class="kpi-label">FORENSIC TAP &amp; CLOAK</span>
-            <span class="pill pill-amber">bounty-safe-v1</span>
+            <span class="kpi-label">REQUISIÇÕES REDIGIDAS</span>
+            <span class={`pill ${events.length > 0 ? "pill-emerald" : "pill-neutral"}`}>
+              {events.length > 0 ? "ATIVO" : "AGUARDANDO"}
+            </span>
           </div>
           <div class="my-1.5">
-            <div class="kpi-value text-[#10b981]">100%</div>
-            <div class="kpi-sub">Auth/Cookie/JWT redacted · WS ticks: {heartbeatCount}</div>
+            <div class="kpi-value text-[#10b981]">{events.filter((e) => e.redacted_headers?.length).length}</div>
+            <div class="kpi-sub">Cabeçalhos anonimizados · Eventos: {events.length}</div>
           </div>
           <div class="bar-track mt-2">
-            <div class="bar-fill bar-fill-emerald" style={{ width: "100%" }} />
+            <div
+              class="bar-fill bar-fill-emerald"
+              style={{
+                width: events.length > 0
+                  ? `${Math.min(100, Math.round((events.filter((e) => e.redacted_headers?.length).length / events.length) * 100))}%`
+                  : "0%",
+              }}
+            />
           </div>
         </div>
       </div>
@@ -295,7 +302,7 @@ export default function LiveProxyStreamer({
                         class="text-right text-[#7d8590] text-[10px]"
                         title={ev.sha256}
                       >
-                        {String(ev.sha256 || "").slice(0, 14)}…
+                        {ev.sha256 ? `${String(ev.sha256).slice(0, 14)}…` : "—"}
                       </td>
                     </tr>
                   );

@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -60,11 +61,52 @@ class ScanTelemetryHub:
 scan_hub = ScanTelemetryHub()
 
 
+async def _valkey_subscriber_loop(websocket: WebSocket, plan_id: str) -> None:
+    """Stream real-time Valkey PubSub scan events to connected WebSocket client."""
+    valkey_url = (
+        os.getenv("VALKEY_URL")
+        or os.getenv("REDIS_URL")
+        or "redis://localhost:6379/0"
+    )
+    try:
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(
+            valkey_url,
+            decode_responses=True,
+            socket_connect_timeout=2.0,
+        )
+        async with client:
+            pubsub = client.pubsub()
+            channel = f"pentefino:events:scans:{plan_id}"
+            await pubsub.subscribe(channel)
+            while True:
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=1.0,
+                )
+                if msg and msg.get("type") == "message":
+                    raw_data = msg.get("data")
+                    if isinstance(raw_data, str):
+                        try:
+                            payload = json.loads(raw_data)
+                            await websocket.send_json(payload)
+                        except Exception:
+                            pass
+                await asyncio.sleep(0.02)
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @router.websocket("/ws/scans/{plan_id}")
 async def ws_scan_telemetry(websocket: WebSocket, plan_id: str) -> None:
     """Stream real-time scan execution telemetry for a given plan_id."""
     await websocket.accept()
     buffered = scan_hub.subscribe(plan_id, websocket)
+
+    valkey_task = asyncio.create_task(_valkey_subscriber_loop(websocket, plan_id))
 
     try:
         await websocket.send_json(
@@ -138,7 +180,13 @@ async def ws_scan_telemetry(websocket: WebSocket, plan_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        valkey_task.cancel()
+        try:
+            await valkey_task
+        except (asyncio.CancelledError, Exception):
+            pass
         scan_hub.unsubscribe(plan_id, websocket)
+
 
 
 @router.websocket("/ws/proxy/live")

@@ -88,6 +88,15 @@ def run_scan(
 
             if async_mode:
                 run_id = uuid.uuid4()
+                from pentefino_worker.publisher import default_publisher
+
+                pub_res = await default_publisher.publish_scan_task(
+                    program_slug=prog.slug,
+                    target_asset=target_asset.canonical_key,
+                    severity=severity,
+                    tags=tags,
+                    run_id=run_id,
+                )
                 await record_audit_event(
                     session=session,
                     event_type="cli.scan.dispatch",
@@ -99,6 +108,7 @@ def run_scan(
                         "tags": tags,
                         "severity": severity,
                         "status": "queued",
+                        "broker_published": pub_res.get("broker_published", False),
                     },
                 )
                 await session.commit()
@@ -109,8 +119,11 @@ def run_scan(
                     "asset": target_asset.canonical_key,
                     "tags": tags,
                     "severity": severity,
-                    "message": f"Scan run for {target_asset.canonical_key} dispatched asynchronously.",
+                    "broker_published": pub_res.get("broker_published", False),
+                    "message": pub_res.get("message")
+                    or f"Scan run for {target_asset.canonical_key} dispatched asynchronously.",
                 }
+
 
             # Synchronous Execution
             # 1. Fetch detected technologies from asset observations

@@ -284,6 +284,10 @@ class FindingListItem(BaseModel):
     dedup_key: str
     first_seen: str
     last_seen: str
+    epss_score: float | None = None
+    epss_percentile: float | None = None
+    in_cisa_kev: bool = False
+    priority_tier: str = "standard"
     asset: AssetInfoSchema | None = None
     detector: DetectorInfoSchema | None = None
 

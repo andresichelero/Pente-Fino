@@ -252,7 +252,7 @@ export async function fetchHealth(): Promise<HealthResponse> {
     status: "offline",
     database: "offline",
     db_connected: false,
-    template_count: 14107,
+    template_count: 0,
     programs_count: 0,
     assets_count: 0,
     findings_count: 0,
@@ -271,7 +271,7 @@ export async function fetchHealth(): Promise<HealthResponse> {
         data?.database === "ok" ||
         data?.status === "ok" ||
         data?.status === "healthy"),
-    template_count: data?.template_count ?? data?.templates_indexed ?? 14107,
+    template_count: data?.template_count ?? data?.templates_indexed ?? 0,
     recent_audit_events: Array.isArray(data?.recent_audit_events)
       ? data.recent_audit_events
       : [],
@@ -354,28 +354,10 @@ export async function fetchAssetGraph(
 
 export async function fetchTemplateStats(): Promise<TemplateStatsResponse> {
   const fallback: TemplateStatsResponse = {
-    total: 14107,
-    by_impact_class: {
-      safe_read_only: 11520,
-      active_reviewed: 1412,
-      stateful: 645,
-      intrusive: 418,
-      lab_only: 112,
-    },
-    by_severity: {
-      critical: 1894,
-      high: 3642,
-      medium: 4815,
-      low: 1490,
-      info: 2266,
-    },
-    by_protocol: {
-      http: 12450,
-      dns: 420,
-      tcp: 685,
-      ssl: 312,
-      headless: 240,
-    },
+    total: 0,
+    by_impact_class: {},
+    by_severity: {},
+    by_protocol: {},
     top_technologies: [],
   };
   const data = await safeFetch<any>("/api/v1/templates/stats", fallback);
@@ -486,7 +468,7 @@ export async function fetchTelemetrySummary(): Promise<TelemetrySummaryResponse>
     rate_limit_rps: 0,
     burst_capacity: 0,
     concurrency_limit: 0,
-    templates_indexed: 14107,
+    templates_indexed: 0,
     programs_count: 0,
     assets_count: 0,
     findings_count: 0,

@@ -31,6 +31,26 @@ class ScanTaskJob(BaseModel):
     target_asset: str
     severity: str | None = None
     tags: str | None = None
+    container_name: str | None = None
+
+
+class ReconTaskJob(BaseModel):
+    """Represents a queued recon task payload."""
+
+    run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    program_slug: str
+    domain: str
+    bruteforce: bool = False
+    container_name: str | None = None
+
+
+class IntelTaskJob(BaseModel):
+    """Represents a queued threat intelligence sync payload."""
+
+    run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    action: str = "sync"
+    sources: list[str] = Field(default_factory=lambda: ["epss", "kev"])
+
 
 
 class ScanTaskWorker:

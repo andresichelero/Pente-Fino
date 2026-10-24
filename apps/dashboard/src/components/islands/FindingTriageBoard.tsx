@@ -86,38 +86,7 @@ export default function FindingTriageBoard({
       // Fallback report generator
     }
 
-    const f = selectedFinding;
-    const fallbackMd = `# [${(f?.detector?.severity || "HIGH").toUpperCase()}] ${
-      f?.detector?.name || f?.detector_id || "Vulnerability Finding"
-    } on \`${f?.asset?.canonical_key || "scanme.nmap.org"}\`
-
-## Executive Summary
-A vulnerability was identified and forensically captured at Evidence Level **${f?.evidence_level || "E2"}** against \`${
-      f?.asset?.canonical_key || "scanme.nmap.org"
-    }\` using detector \`${f?.detector_id || "nuclei-detector"}\`.
-
-- **Deduplication SHA-256**: \`${f?.dedup_key || "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}\`
-- **Confidence**: \`${f?.confidence || "high"}\`
-- **Advisory / CVE**: \`${f?.advisory_id || f?.detector?.cve_id || "N/A"}\`
-
-## Reproducible Proof-of-Concept (Sanitized curl)
-\`\`\`bash
-curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" \\
-  -H "User-Agent: Mozilla/5.0 (Security-Audit; PenteFino-Bounty-Safe)" \\
-  -H "Authorization: [REDACTED]"
-\`\`\`
-
-## Forensic SHA-256 Chain of Custody
-| Evidence ID | Type | Sanitized SHA-256 | SeaweedFS Object Key | Redaction Profile |
-|---|---|---|---|---|
-| \`${f?.evidence_items?.[0]?.id || "ev-01"}\` | \`http_interaction\` | \`${
-      f?.evidence_items?.[0]?.sanitized_sha256 ||
-      "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-    }\` | \`${
-      f?.evidence_items?.[0]?.seaweed_object_key || "s3://evidence/sanitized/req-resp.json"
-    }\` | \`bounty-safe-v1\` |
-`;
-    setReportMarkdown(fallbackMd);
+    setReportMarkdown("Não foi possível carregar o relatório forense. O serviço de API está indisponível.");
     setLoadingReport(false);
   }
 
@@ -451,7 +420,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                   onClick={() => setSelectedFinding(null)}
                   class="btn btn-ghost !py-1 !px-2.5"
                 >
-                  ✕ Close
+                  ✕ Fechar
                 </button>
               </div>
 
@@ -462,7 +431,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                   onClick={() => setDrawerTab("forensic")}
                   class={`seg-btn flex-1 ${drawerTab === "forensic" ? "active" : ""}`}
                 >
-                  1. Forensic Chain of Custody (E2 / S3)
+                  1. Artefatos de Evidência (S3)
                 </button>
                 <button
                   type="button"
@@ -474,7 +443,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                   }}
                   class={`seg-btn flex-1 ${drawerTab === "report" ? "active" : ""}`}
                 >
-                  2. HackerOne / Bugcrowd Dossier (.md)
+                  2. Relatório de Vulnerabilidade (.md)
                 </button>
               </div>
 
@@ -510,7 +479,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                       </div>
                     ) : (selectedFinding.evidence_items || []).length === 0 ? (
                       <div class="bg-[#070a0f] border border-[#1b2230] rounded p-3 text-[#7d8590]">
-                        No S3 pointer attached to this finding record.
+                        Nenhum apontador S3 associado a este achado.
                       </div>
                     ) : (
                       selectedFinding.evidence_items.map((ev: any) => (
@@ -542,7 +511,7 @@ curl -i -s -k -X GET "https://${f?.asset?.canonical_key || "scanme.nmap.org"}/" 
                 <div class="space-y-3">
                   <div class="flex flex-wrap items-center justify-between gap-2">
                     <span class="kpi-label">
-                      SANITIZED BOUNTY DOSSIER (`bounty-safe-v1`)
+                      Relatório Forense de Vulnerabilidade
                     </span>
                     <div class="flex items-center gap-2">
                       <button

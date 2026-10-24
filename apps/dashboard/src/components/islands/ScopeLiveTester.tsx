@@ -6,16 +6,6 @@ export interface ScopeLiveTesterProps {
   apiBaseUrl?: string;
 }
 
-const PRECEDENCE_TIERS = [
-  { id: "EXPLICIT_DENY", rank: 1, label: "T1 · EXPLICIT_DENY / SSRF GUARD", desc: "RFC1918, Loopback, Link-Local 169.254.169.254 ou regra DENY explícita" },
-  { id: "EXPIRED_AUTH", rank: 2, label: "T2 · EXPIRED_AUTH / SNAPSHOT GATE", desc: "AuthorizationSnapshot expirado ou programa inativo" },
-  { id: "PATH_PORT_DENY", rank: 3, label: "T3 · PATH_PORT_DENY", desc: "Porta fora de allowed_ports ou caminho em denied_paths (/admin, /logout)" },
-  { id: "EXPLICIT_ALLOW", rank: 4, label: "T4 · EXPLICIT_ALLOW", desc: "Correspondência exata com regra ALLOW (in_scope_explicit)" },
-  { id: "WILDCARD_ALLOW", rank: 5, label: "T5 · WILDCARD_ALLOW", desc: "Subdomínio derivado de *.alvo.com (in_scope_derived)" },
-  { id: "DERIVED_CANDIDATE", rank: 6, label: "T6 · DERIVED_CANDIDATE", desc: "Regra discover_only — restrito a reconhecimento passivo" },
-  { id: "UNKNOWN_DENY", rank: 7, label: "T7 · UNKNOWN_DENY (FAIL-CLOSED)", desc: "Nenhuma regra aplicável — bloqueado por padrão" },
-];
-
 export default function ScopeLiveTester({
   initialPrograms = [],
   initialSlug = "",
@@ -280,7 +270,7 @@ export default function ScopeLiveTester({
           scope_state: "out_of_scope",
           precedence_tier: "UNKNOWN_DENY",
           matched_pattern: null,
-          reason: "Alvo não corresponde a nenhuma regra de inclusão (Padrão Fail-Closed).",
+          reason: "Alvo não corresponde a nenhuma regra de escopo definida.",
           resolved_ip: null,
           target_canonical: tgt,
         });
@@ -295,8 +285,6 @@ export default function ScopeLiveTester({
     setPathInput(presetPath);
     runEvaluate(presetTarget, presetPort, presetPath);
   }
-
-  const matchedTierId = verdict?.precedence_tier || verdict?.matched_tier || "";
 
   const renderNewProgramModal = () => (
     <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -422,9 +410,7 @@ export default function ScopeLiveTester({
             class="input !w-auto min-w-[220px]"
           >
             {programs.length === 0 ? (
-              <option value={selectedSlug || "nmap-scanme"}>
-                {selectedSlug || "nmap-scanme"}
-              </option>
+              <option value="">Nenhum programa cadastrado</option>
             ) : (
               programs.map((p) => (
                 <option key={p.slug} value={p.slug}>
@@ -506,7 +492,7 @@ export default function ScopeLiveTester({
                 type="text"
                 value={rulePattern}
                 onInput={(e) => setRulePattern((e.target as HTMLInputElement).value)}
-                placeholder="*.scanme.nmap.org"
+                placeholder="*.exemplo.com"
                 class="input"
                 required
               />
@@ -631,7 +617,7 @@ export default function ScopeLiveTester({
         {/* Right 5 Cols: Live 7-Tier Simulator */}
         <div class="lg:col-span-5 card card-pad space-y-3.5">
           <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
-            <span class="card-title">LIVE 7-TIER SCOPE EVALUATOR</span>
+            <span class="card-title">TESTADOR DE ESCOPO</span>
             <div class="flex items-center gap-1.5 font-mono text-[10px]">
               <button
                 type="button"
@@ -732,7 +718,7 @@ export default function ScopeLiveTester({
                 <div>
                   <span class="text-[#738196] block text-[10px]">RESOLVED IP / PATTERN</span>
                   <span class="text-[#fbbf24] truncate block">
-                    {verdict.resolved_ip || verdict.matched_pattern || "fail-closed"}
+                    {verdict.resolved_ip || verdict.matched_pattern || "—"}
                   </span>
                 </div>
               </div>
@@ -740,33 +726,6 @@ export default function ScopeLiveTester({
               <div class="text-[11px] text-[#8b98a9]">{verdict.reason}</div>
             </div>
           )}
-
-          {/* Compact 1-Line-Per-Tier Stack (expands description only on match) */}
-          <div class="space-y-1 pt-1">
-            {PRECEDENCE_TIERS.map((tier) => {
-              const isMatched = matchedTierId === tier.id;
-              return (
-                <div
-                  key={tier.id}
-                  class={`px-2.5 py-1.5 rounded border font-mono text-[11px] transition-all duration-150 ${
-                    isMatched
-                      ? verdict?.allowed
-                        ? "bg-emerald-950/30 border-[#34d399] text-white"
-                        : "bg-red-950/30 border-[#f87171] text-white"
-                      : "bg-[#070a0f]/60 border-[#1b2230] text-[#738196]"
-                  }`}
-                >
-                  <div class="flex items-center justify-between">
-                    <span>{tier.label}</span>
-                    {isMatched && <span class="text-[10px] text-[#fbbf24] font-bold">● MATCH</span>}
-                  </div>
-                  {isMatched && (
-                    <div class="text-[10px] text-[#8b98a9] mt-1 font-sans">{tier.desc}</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
         </div>
       </div>
 

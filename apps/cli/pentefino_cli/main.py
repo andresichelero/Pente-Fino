@@ -9,6 +9,7 @@ from pentefino_cli.commands import (
     auth,
     finding,
     gui,
+    intel,
     program,
     recon,
     run,
@@ -62,6 +63,7 @@ app.add_typer(finding.app, name="finding")
 app.add_typer(recon.app, name="recon")
 app.add_typer(scan.app, name="scan")
 app.add_typer(template.app, name="template")
+app.add_typer(intel.app, name="intel")
 app.command(name="api")(gui.run_api_server)
 app.command(name="gui")(gui.run_gui_stack)
 

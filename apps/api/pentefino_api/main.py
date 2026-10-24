@@ -13,7 +13,9 @@ from sqlalchemy import func, select
 from pentefino_api.deps import DatabaseStandbyError
 from pentefino_api.routers import (
     assets,
+    evidence,
     findings,
+    intel,
     programs,
     scans,
     scope,
@@ -223,6 +225,12 @@ def create_app() -> FastAPI:
         request: Request, exc: Exception
     ) -> JSONResponse:
         """Return a CORS-compliant standby response when PostgreSQL becomes unreachable."""
+        if isinstance(exc, HTTPException):
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=getattr(exc, "headers", None),
+            )
         mark_db_offline()
         return _build_standby_response(request, exc)
 
@@ -287,6 +295,8 @@ def create_app() -> FastAPI:
     app.include_router(templates.router)
     app.include_router(scans.router)
     app.include_router(findings.router)
+    app.include_router(evidence.router)
+    app.include_router(intel.router)
     app.include_router(ws.router)
 
     return app

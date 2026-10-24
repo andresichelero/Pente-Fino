@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import re
 from typing import Any, Sequence
 import urllib.parse
@@ -43,10 +44,46 @@ class FindingNormalizer:
         db_session: AsyncSession,
         s3_client: Any | None = None,
         redactor: Any | None = None,
+        enricher: Any | None = None,
+        notification_dispatcher: Any | None = None,
+        webhook_urls: list[str] | None = None,
+        webhook_secret: str | None = None,
     ):
         self.db_session = db_session
         self.s3_client = s3_client if s3_client is not None else self._resolve_default_s3_client()
         self.redactor = redactor or self._resolve_default_redactor()
+        self.enricher = enricher if enricher is not None else self._resolve_default_enricher()
+        self.webhook_secret = webhook_secret or os.environ.get("PENTEFINO_WEBHOOK_SECRET")
+        self.notification_dispatcher = (
+            notification_dispatcher
+            if notification_dispatcher is not None
+            else self._resolve_default_dispatcher(self.webhook_secret)
+        )
+        self.webhook_urls = webhook_urls
+
+    @staticmethod
+    def _resolve_default_enricher() -> Any:
+        try:
+            from pentefino_intel import ThreatIntelEnricher
+            return ThreatIntelEnricher()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_default_dispatcher(secret: str | None) -> Any:
+        try:
+            from pentefino_notifications import NotificationDispatcher
+            return NotificationDispatcher(signing_secret=secret)
+        except Exception:
+            return None
+
+    def _resolve_webhook_urls(self) -> list[str]:
+        if self.webhook_urls is not None:
+            return list(self.webhook_urls)
+        env_url = os.environ.get("PENTEFINO_WEBHOOK_URL")
+        if env_url:
+            return [u.strip() for u in env_url.split(",") if u.strip()]
+        return ["https://alerts.pentefino.local/webhook"]
 
     @staticmethod
     def _resolve_default_s3_client() -> Any:
@@ -82,6 +119,7 @@ class FindingNormalizer:
         program_id: uuid.UUID | str,
         asset_id: uuid.UUID | str | None = None,
         run_id: uuid.UUID | str | None = None,
+        webhook_urls: list[str] | None = None,
     ) -> list[Finding]:
         """Normalize Nuclei output into deduplicated Finding and Evidence records.
 
@@ -90,6 +128,7 @@ class FindingNormalizer:
             program_id: Program ID UUID.
             asset_id: Optional Asset ID UUID (generated if not provided).
             run_id: Optional Run ID UUID for forensic correlation.
+            webhook_urls: Optional list of destination webhook URLs to notify.
 
         Returns:
             List of persisted or updated Finding domain instances.
@@ -165,13 +204,51 @@ class FindingNormalizer:
             if not isinstance(classification, dict):
                 classification = {}
 
-            cve_id = classification.get("cve-id")
+            cve_id = (
+                classification.get("cve-id")
+                or raw_item.get("cve-id")
+                or info.get("cve")
+            )
             if isinstance(cve_id, list) and cve_id:
                 advisory_id = str(cve_id[0])
             elif cve_id:
                 advisory_id = str(cve_id)
             else:
                 advisory_id = None
+
+            # Detect candidate CVE for threat intel enrichment
+            cve_candidate: str | None = None
+            if advisory_id and re.match(r"^CVE-\d{4}-\d{4,}$", str(advisory_id).strip(), re.IGNORECASE):
+                cve_candidate = str(advisory_id).strip().upper()
+            elif re.match(r"^CVE-\d{4}-\d{4,}$", detector_id.strip(), re.IGNORECASE):
+                cve_candidate = detector_id.strip().upper()
+                if not advisory_id:
+                    advisory_id = cve_candidate
+            else:
+                m = re.search(r"\b(CVE-\d{4}-\d{4,})\b", detector_id, re.IGNORECASE)
+                if m:
+                    cve_candidate = m.group(1).upper()
+                    if not advisory_id:
+                        advisory_id = cve_candidate
+
+            # Threat Intel Enrichment
+            epss_score: float | None = None
+            epss_percentile: float | None = None
+            in_cisa_kev: bool = False
+            priority_tier: str = "standard"
+
+            if cve_candidate and self.enricher is not None:
+                try:
+                    intel = await self.enricher.enrich_cve(cve_candidate)
+                    epss_score = intel.epss_score
+                    epss_percentile = intel.epss_percentile
+                    in_cisa_kev = intel.in_cisa_kev
+                    priority_tier = intel.priority_tier
+                except Exception:
+                    epss_score = None
+                    epss_percentile = None
+                    in_cisa_kev = False
+                    priority_tier = "standard"
 
             # 5. Determine or Update Finding Entity
             finding: Finding | None = session_findings.get(dedup_key)
@@ -188,6 +265,10 @@ class FindingNormalizer:
                 if existing is not None:
                     finding = existing
                     finding.last_seen = now
+                    finding.epss_score = epss_score
+                    finding.epss_percentile = epss_percentile
+                    finding.in_cisa_kev = in_cisa_kev
+                    finding.priority_tier = priority_tier
                     # Reopen finding if it was previously marked remediated or resolved
                     if finding.status in (
                         FindingStatus.REMEDIATED.value,
@@ -235,6 +316,10 @@ class FindingNormalizer:
                         status=initial_status,
                         evidence_level=self._determine_evidence_level(raw_item),
                         confidence=confidence,
+                        epss_score=epss_score,
+                        epss_percentile=epss_percentile,
+                        in_cisa_kev=in_cisa_kev,
+                        priority_tier=priority_tier,
                         first_seen=now,
                         last_seen=now,
                     )
@@ -244,6 +329,10 @@ class FindingNormalizer:
                 persisted_findings.append(finding)
             else:
                 finding.last_seen = now
+                finding.epss_score = epss_score
+                finding.epss_percentile = epss_percentile
+                finding.in_cisa_kev = in_cisa_kev
+                finding.priority_tier = priority_tier
                 if finding.status in (
                     FindingStatus.REMEDIATED.value,
                     FindingStatus.RESOLVED.value,
@@ -251,6 +340,34 @@ class FindingNormalizer:
                     "resolved",
                 ):
                     finding.status = FindingStatus.REOPENED.value
+
+            # Trigger automated webhook alert for CISA KEV or high priority findings
+            if finding.in_cisa_kev or finding.priority_tier in ("critical_kev", "high_epss"):
+                target_urls = (
+                    webhook_urls
+                    if webhook_urls is not None
+                    else self._resolve_webhook_urls()
+                )
+                if target_urls and self.notification_dispatcher is not None:
+                    try:
+                        from pentefino_notifications import SanitizedFindingAlert
+                        alert = SanitizedFindingAlert(
+                            program_slug=str(prog_uuid),
+                            canonical_key=canonical_asset,
+                            detector_id=finding.detector_id,
+                            severity=severity,
+                            evidence_level=finding.evidence_level,
+                            dedup_key=finding.dedup_key,
+                            advisory_id=finding.advisory_id,
+                            summary=(
+                                f"Automated threat alert: {finding.detector_id} on {canonical_asset} "
+                                f"[Tier: {finding.priority_tier}, KEV: {finding.in_cisa_kev}, EPSS: {finding.epss_score}]"
+                            ),
+                        )
+                        for url in target_urls:
+                            await self.notification_dispatcher.send_webhook(url, alert)
+                    except Exception:
+                        pass
 
             # 6. Sanitize and Store Forensic Evidence in SeaweedFS
             evidence_record = await self._create_and_store_evidence(

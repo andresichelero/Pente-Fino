@@ -13,6 +13,8 @@ authors = [
 dependencies = [
     "sqlalchemy[asyncio]>=2.0.30",
     "pydantic>=2.7.0",
+    "aio-pika>=10.0.0",
+    "redis>=5.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

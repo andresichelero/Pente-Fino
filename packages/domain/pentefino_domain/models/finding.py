@@ -1,7 +1,18 @@
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import CHAR, UUID, TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +50,14 @@ class Finding(Base, UUIDMixin):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_level: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(Text, nullable=False)
+    epss_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    epss_percentile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    in_cisa_kev: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    priority_tier: Mapped[str] = mapped_column(
+        String(32), default="standard", server_default=text("'standard'"), nullable=False
+    )
     first_seen: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -65,10 +84,16 @@ class Finding(Base, UUIDMixin):
             "confidence IN ('low', 'medium', 'high')",
             name="chk_findings_confidence",
         ),
+        CheckConstraint(
+            "priority_tier IN ('critical_kev', 'high_epss', 'elevated', 'standard')",
+            name="chk_findings_priority_tier",
+        ),
         UniqueConstraint("program_id", "dedup_key", name="uq_findings_prog_dedup"),
         Index("ix_findings_prog_status", "program_id", "status"),
         Index("ix_findings_prog_evidence", "program_id", "evidence_level"),
         Index("ix_findings_asset_id", "asset_id"),
+        Index("ix_findings_priority_tier", "priority_tier"),
+        Index("ix_findings_in_cisa_kev", "in_cisa_kev"),
     )
 
     # Relationships
@@ -83,3 +108,8 @@ class Finding(Base, UUIDMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("in_cisa_kev", False)
+        kwargs.setdefault("priority_tier", "standard")
+        super().__init__(*args, **kwargs)

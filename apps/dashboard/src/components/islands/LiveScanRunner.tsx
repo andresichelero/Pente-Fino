@@ -142,7 +142,7 @@ export default function LiveScanRunner({
     setScanResult(null);
     setScanProgress(25);
     const sevString = selectedSeverities.join(",");
-    appendLog(`[STAGE-1] DetectionPlanner cirúrgico → '${assetKey.trim()}' (${programSlug}) [sev=${sevString}]`);
+    appendLog(`[ETAPA-1] Calculando plano de detecção → '${assetKey.trim()}' (${programSlug}) [sev=${sevString}]`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/scans/plan`, {
@@ -169,44 +169,15 @@ export default function LiveScanRunner({
         );
         setPlanning(false);
         return;
+      } else {
+        appendLog(`[ERRO] API retornou erro ${res.status} ao gerar plano de detecção.`);
       }
-    } catch {
-      // Fallback simulation if API is unreachable
+    } catch (err: any) {
+      appendLog(`[ERRO] Falha ao consultar plano de detecção na API: ${err?.message || "conexão recusada"}`);
     }
 
-    const fallbackPlan = {
-      plan_id: "plan-sim-" + Math.random().toString(36).slice(2, 10),
-      program_slug: programSlug,
-      asset_key: assetKey.trim(),
-      target_url: assetKey.startsWith("http") ? assetKey : `https://${assetKey}`,
-      raw_detected_technologies: ["Apache", "OpenSSH", "Cloudflare"],
-      pruned_edge_tags: ["cloudflare"],
-      matched_technologies: ["apache", "openssh"],
-      total_templates: 378,
-      selected_templates: [
-        {
-          id: "http/technologies/apache/apache-detect.yaml",
-          name: "Apache HTTP Server Detection",
-          severity: "info",
-          impact_class: "safe_read_only",
-          cve_id: null,
-          technologies: ["apache"],
-        },
-        {
-          id: "http/cves/2021/CVE-2021-41773.yaml",
-          name: "Apache 2.4.49 Path Traversal Check (Read-Only Probe)",
-          severity: "high",
-          impact_class: "safe_read_only",
-          cve_id: "CVE-2021-41773",
-          technologies: ["apache"],
-        },
-      ],
-    };
-    setPlanResult(fallbackPlan);
-    setScanProgress(50);
-    appendLog(
-      `[PLANNER] CDN Pruned: [cloudflare] | Matched: [apache, openssh] -> 378 templates safe_read_only.`
-    );
+    setPlanResult(null);
+    setScanProgress(0);
     setPlanning(false);
   }
 
@@ -280,24 +251,15 @@ export default function LiveScanRunner({
         await fetchHistory();
         setRunningScan(false);
         return;
+      } else {
+        appendLog(`[ERRO] API retornou erro ${res.status} ao executar varredura.`);
       }
-    } catch {
-      // Fallback dry-run log output
+    } catch (err: any) {
+      appendLog(`[ERRO] Falha ao comunicar com o executor de varreduras: ${err?.message || "conexão recusada"}`);
     }
 
-    appendLog(`[FALLBACK] Docker offline ou dry_run — executado em modo Dry-Run seguro.`);
-    setScanProgress(100);
-    setScanResult({
-      plan_id: activePlanId,
-      program_slug: programSlug,
-      asset_key: assetKey,
-      target_url: `https://${assetKey}`,
-      status: "completed",
-      mode_executed: "dry_run",
-      total_templates: planResult?.total_templates || 378,
-      findings_count: 0,
-      message: "Dry-Run concluído (--read-only --cap-drop ALL).",
-    });
+    setScanProgress(0);
+    setScanResult(null);
     setRunningScan(false);
   }
 
@@ -340,7 +302,7 @@ export default function LiveScanRunner({
       <div class="card card-pad">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div class="flex items-center gap-2">
-            <span class="pill pill-emerald">[DetectionPlanner → HardenedNucleiRunner]</span>
+            <span class="pill pill-emerald">Varredura de Detecção</span>
             <span class="text-xs font-mono font-semibold text-[#e6edf3]">
               {assetKey || "Nenhum alvo selecionado"}
             </span>
@@ -435,7 +397,7 @@ export default function LiveScanRunner({
 
           <div class="md:col-span-2">
             <button type="submit" disabled={planning} class="btn btn-cyan w-full">
-              {planning ? "Planning..." : "1. Simulate Plan"}
+              {planning ? "Planejando..." : "1. Planejar Varredura"}
             </button>
           </div>
         </div>
@@ -472,7 +434,7 @@ export default function LiveScanRunner({
             })}
           </div>
           <div class="flex items-center gap-1.5 text-[10px] font-mono text-[#7d8590]">
-            <span>Hard-Gate:</span>
+            <span>Regra:</span>
             <span class="pill pill-emerald">SAFE_READ_ONLY</span>
             <span class="pill pill-cyan">Proxy 127.0.0.1:8080</span>
           </div>
@@ -486,7 +448,7 @@ export default function LiveScanRunner({
           <div>
             <div class="px-3.5 py-2.5 border-b border-[#1b2230] flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <span class="kpi-label text-[#06b6d4]">STAGE 1 · DETECTION PLANNER</span>
+                <span class="kpi-label text-[#06b6d4]">ETAPA 1 · PLANO DE DETECÇÃO</span>
                 {planResult && (
                   <span class="text-[10px] font-mono text-[#7d8590]">
                     #{String(planResult.plan_id).slice(0, 12)}
@@ -501,14 +463,14 @@ export default function LiveScanRunner({
             {!planResult ? (
               <div class="p-8 text-center space-y-2.5">
                 <p class="text-xs font-mono text-[#7d8590]">
-                  Clique em <strong class="text-[#e6edf3]">1. Simulate Plan</strong> para podar tags de CDN/WAF e filtrar templates <code class="text-[#10b981]">safe_read_only</code>.
+                  Clique em <strong class="text-[#e6edf3]">1. Planejar Varredura</strong> para filtrar templates compatíveis.
                 </p>
                 <button
                   type="button"
                   onClick={() => handleSimulatePlan()}
                   class="btn btn-ghost"
                 >
-                  Executar DetectionPlanner Agora
+                  Calcular Plano de Detecção
                 </button>
               </div>
             ) : (
@@ -606,8 +568,8 @@ export default function LiveScanRunner({
                 class="btn btn-primary w-full py-2"
               >
                 {runningScan
-                  ? "Running Ephemeral Container..."
-                  : `2. Execute Surgical Scan (${planResult.total_templates} Templates)`}
+                  ? "Executando Container..."
+                  : `2. Executar Varredura (${planResult.total_templates} Templates)`}
               </button>
             </div>
           )}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import urllib.parse
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -233,6 +234,35 @@ async def run_scan(
                 f"Docker runtime unavailable or restricted ({type(exc).__name__}); "
                 f"gracefully completed in dry-run mode with {plan.total_templates} planned templates."
             )
+    elif requested_mode in ("async", "queue", "queued"):
+        from pentefino_worker.publisher import default_publisher
+
+        pub_res = await default_publisher.publish_scan_task(
+            program_slug=prog.slug,
+            target_asset=target_asset.canonical_key,
+            severity=payload.severity,
+            tags=payload.tags,
+            run_id=plan.plan_id,
+        )
+        status_str = "queued"
+        mode_executed = "amqp_worker"
+        msg = (
+            f"Scan job queued in AMQP broker (run_id={plan_id_str})."
+            if pub_res.get("broker_published")
+            else f"Scan job queued with fallback (run_id={plan_id_str})."
+        )
+        await scan_hub.broadcast(
+            plan_id_str,
+            {
+                "event": "scan_queued",
+                "stage": "AmqpBroker",
+                "status": "queued",
+                "run_id": plan_id_str,
+                "message": msg,
+                "progress": 10,
+            },
+        )
+
 
     await scan_hub.broadcast(
         plan_id_str,
@@ -309,3 +339,53 @@ async def get_scan_history(
         )
         for ev in events
     ]
+
+
+@router.post("/{run_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel_scan(
+    run_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Deterministically terminate and cancel an ephemeral scan run on-demand."""
+    from pentefino_worker.cancellation import default_container_registry
+
+    clean_run_id = str(run_id).strip()
+    try:
+        parsed_uuid = uuid.UUID(clean_run_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid UUID format: '{clean_run_id}'",
+        )
+
+    # 1. Trigger cancellation locally and broadcast via Valkey
+    await default_container_registry.broadcast_cancel(clean_run_id)
+
+    # 2. Record API audit event
+    await record_api_audit(
+        session=session,
+        event_type="api.scan.cancel",
+        object_type="scan_run",
+        object_id=parsed_uuid,
+        payload={"status": "cancelled", "run_id": clean_run_id},
+    )
+
+    # 3. Broadcast to WebSocket telemetry hub
+    await scan_hub.broadcast(
+        clean_run_id,
+        {
+            "event": "scan_cancelled",
+            "stage": "Cancellation",
+            "status": "cancelled",
+            "run_id": clean_run_id,
+            "message": f"Scan run {clean_run_id} was cancelled by operator request.",
+            "progress": 100,
+        },
+    )
+
+    return {
+        "status": "cancelled",
+        "run_id": clean_run_id,
+        "message": f"Cancellation signal dispatched for scan run {clean_run_id}.",
+    }
+

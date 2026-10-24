@@ -44,7 +44,7 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
 ---
 
 <BaseLayout
-  title="Ativos & Grafo"
+  title="Ativos"
   activeNav="assets"
 >
   {
@@ -74,7 +74,6 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
           <div class="card card-pad space-y-2">
             <div class="flex items-center justify-between">
               <span class="card-title">IN_SCOPE_EXPLICIT</span>
-              <span class="font-mono text-[10px] text-[#34d399]">TIER 5</span>
             </div>
             <div class="kpi text-[#34d399]">{countExplicit}</div>
             <div class="bar text-[#34d399]">
@@ -85,7 +84,6 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
           <div class="card card-pad space-y-2">
             <div class="flex items-center justify-between">
               <span class="card-title">IN_SCOPE_DERIVED</span>
-              <span class="font-mono text-[10px] text-[#22d3ee]">TIER 6</span>
             </div>
             <div class="kpi text-[#22d3ee]">{countDerived}</div>
             <div class="bar text-[#22d3ee]">
@@ -96,7 +94,6 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
           <div class="card card-pad space-y-2">
             <div class="flex items-center justify-between">
               <span class="card-title">CANDIDATE</span>
-              <span class="font-mono text-[10px] text-[#fbbf24]">PASSIVE</span>
             </div>
             <div class="kpi text-[#fbbf24]">{countCandidate}</div>
             <div class="bar text-[#fbbf24]">
@@ -107,7 +104,6 @@ const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + 
           <div class="card card-pad space-y-2">
             <div class="flex items-center justify-between">
               <span class="card-title">OUT_OF_SCOPE</span>
-              <span class="font-mono text-[10px] text-[#f87171]">BLOCKED</span>
             </div>
             <div class="kpi text-[#f87171]">{countOut}</div>
             <div class="bar text-[#f87171]">

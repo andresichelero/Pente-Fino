@@ -129,6 +129,14 @@ def run_recon(
 
             if async_mode:
                 task_id = uuid.uuid4()
+                from pentefino_worker.publisher import default_publisher
+
+                pub_res = await default_publisher.publish_recon_task(
+                    program_slug=prog.slug,
+                    domain=clean_domain,
+                    bruteforce=bruteforce,
+                    run_id=task_id,
+                )
                 await record_audit_event(
                     session=session,
                     event_type="cli.recon.dispatch",
@@ -139,6 +147,7 @@ def run_recon(
                         "domain": clean_domain,
                         "bruteforce": bruteforce,
                         "status": "queued",
+                        "broker_published": pub_res.get("broker_published", False),
                     },
                 )
                 await session.commit()
@@ -148,8 +157,11 @@ def run_recon(
                     "program": prog.slug,
                     "domain": clean_domain,
                     "bruteforce": bruteforce,
-                    "message": f"Recon task for {clean_domain} dispatched asynchronously.",
+                    "broker_published": pub_res.get("broker_published", False),
+                    "message": pub_res.get("message")
+                    or f"Recon task for {clean_domain} dispatched asynchronously.",
                 }
+
 
             # Synchronous pipeline execution
             scope_engine = await _load_scope_engine(session, prog)

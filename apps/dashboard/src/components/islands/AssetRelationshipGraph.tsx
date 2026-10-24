@@ -298,13 +298,13 @@ export default function AssetRelationshipGraph({
 
                 {/* Column Titles */}
                 <text x="145" y="26" text-anchor="middle" fill="#a78bfa" font-size="10" font-family="monospace">
-                  OBSERVED DNS IPs (SCOPABLE=FALSE)
+                  IPs Observados via DNS
                 </text>
                 <text x="440" y="26" text-anchor="middle" fill="#34d399" font-size="10" font-family="monospace">
-                  PROGRAM &amp; SCOPED ASSETS
+                  Ativos Mapeados
                 </text>
                 <text x="735" y="26" text-anchor="middle" fill="#22d3ee" font-size="10" font-family="monospace">
-                  TECH STACK &amp; PRUNED CDN
+                  Tecnologias Identificadas
                 </text>
 
                 {/* Edges with Animated Flow on Active Selection */}
@@ -414,7 +414,7 @@ export default function AssetRelationshipGraph({
                           {node.label}
                         </text>
                         <text x="0" y="12" text-anchor="middle" fill="#a78bfa" font-size="8.5" font-family="monospace">
-                          DNS METADATA ONLY · UNSCOPED
+                          Observação DNS
                         </text>
                       </g>
                     );
@@ -536,15 +536,15 @@ export default function AssetRelationshipGraph({
                 <div class="space-y-3 text-xs num">
                   {selectedNode.node_type === "observed_ip" && (
                     <div class="p-2.5 rounded-lg bg-purple-950/30 border border-[#a78bfa]/40 text-[#ede9fe] text-[11px]">
-                      <div class="font-semibold text-[#a78bfa]">CRITICAL IP INVARIANT</div>
-                      Observed via DNS resolution only (`scopable: false`). Never promoted to `Asset(type="ip")`.
+                      <div class="font-semibold text-[#a78bfa]">IP de Observação</div>
+                      Observado apenas via resolução DNS. Não elegível como alvo direto de varredura.
                     </div>
                   )}
 
                   {selectedNode.node_type === "technology" && selectedNode.metadata?.is_pruned_cdn && (
                     <div class="p-2.5 rounded-lg bg-amber-950/30 border border-[#fbbf24]/40 text-[#fde68a] text-[11px]">
-                      <div class="font-semibold text-[#fbbf24]">PRUNED EDGE CDN/WAF TAG</div>
-                      Excluded by `DetectionPlanner` to prevent scanning multi-tenant edge infrastructure.
+                      <div class="font-semibold text-[#fbbf24]">Tag CDN / Borda Descartada</div>
+                      Descartada do plano para evitar varredura em infraestrutura compartilhada de borda.
                     </div>
                   )}
 
@@ -619,7 +619,7 @@ export default function AssetRelationshipGraph({
                 )}`}
                 class="btn btn-primary w-full"
               >
-                Plan Surgical Scan on Asset →
+                Planejar Varredura no Ativo →
               </a>
             )}
           </div>

@@ -20,8 +20,8 @@ const [health, programs, templateStats, findings, telemetry] = await Promise.all
 const activeProgramsCount = programs.filter((p) => p.state === "active").length;
 const totalScopedAssets = programs.reduce((acc, p) => acc + (p.assets_count || 0), 0);
 
-const totalTemplates = templateStats.total || health.template_count || 14107;
-const safeTemplates = templateStats.by_impact_class?.safe_read_only ?? 11520;
+const totalTemplates = templateStats.total ?? health.template_count ?? 0;
+const safeTemplates = templateStats.by_impact_class?.safe_read_only ?? 0;
 const safeRatioPct = totalTemplates > 0 ? Math.min(100, Math.round((safeTemplates / totalTemplates) * 100)) : 0;
 
 const validatedE2Count = findings.filter(
@@ -32,7 +32,7 @@ const validatedE2Count = findings.filter(
 ).length;
 
 const impactClasses = [
-  { key: "safe_read_only", label: "safe_read_only", mode: "BOUNTY-SAFE", method: "GET/HEAD", color: "text-[#34d399]", bar: "bg-[#34d399]" },
+  { key: "safe_read_only", label: "safe_read_only", mode: "SAFE", method: "GET/HEAD", color: "text-[#34d399]", bar: "bg-[#34d399]" },
   { key: "active_reviewed", label: "active_reviewed", mode: "REVIEWED", method: "GET/POST", color: "text-[#22d3ee]", bar: "bg-[#22d3ee]" },
   { key: "stateful", label: "stateful", mode: "MUTATING", method: "POST/PUT", color: "text-[#fbbf24]", bar: "bg-[#fbbf24]" },
   { key: "intrusive", label: "intrusive", mode: "RESTRICTED", method: "FUZZ/BRUTE", color: "text-[#f87171]", bar: "bg-[#f87171]" },
@@ -45,7 +45,7 @@ const auditEvents = health.recent_audit_events?.length
 ---
 
 <BaseLayout
-  title="Overview"
+  title="Visão Geral"
   activeNav="overview"
 >
   {
@@ -69,7 +69,6 @@ const auditEvents = health.recent_audit_events?.length
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
         <span class="card-title">EGRESS RPS</span>
-        <span class="font-mono text-[10px] text-[#34d399]">TOKEN-BUCKET</span>
       </div>
       <div>
         <div class="kpi">{telemetry.rate_limit_rps.toFixed(2)} <span class="text-xs font-normal text-[#8b98a9]">req/s</span></div>
@@ -99,12 +98,11 @@ const auditEvents = health.recent_audit_events?.length
     <div class="card card-pad flex flex-col justify-between space-y-2">
       <div class="flex items-center justify-between">
         <span class="card-title">SSRF BLOCKS</span>
-        <span class="font-mono text-[10px] text-[#fbbf24]">HARD GATE</span>
       </div>
       <div>
-        <div class="kpi">0 <span class="text-xs font-normal text-[#8b98a9]">leaks</span></div>
+        <div class="kpi">{telemetry.ssrf_blocks_series?.reduce((a, b) => a + b, 0) ?? 0} <span class="text-xs font-normal text-[#8b98a9]">bloqueios</span></div>
         <div class="text-[11px] num text-[#738196] mt-0.5">
-          RFC1918 · IMDSv2 · IPv6
+          Regras de rede & IP
         </div>
       </div>
       <SparklineSVG data={telemetry.ssrf_blocks_series} color="amber" height={32} min={0} max={3} />
@@ -142,7 +140,7 @@ const auditEvents = health.recent_audit_events?.length
           <span style={`width: ${safeRatioPct}%`}></span>
         </div>
         <div class="flex justify-between text-[10px] num text-[#738196]">
-          <span>bounty-safe</span>
+          <span>leitura segura</span>
           <span>{safeRatioPct}%</span>
         </div>
       </div>
@@ -170,16 +168,16 @@ const auditEvents = health.recent_audit_events?.length
     <div class="lg:col-span-7 card overflow-hidden">
       <div class="px-4 py-3 border-b border-[#1b2230] flex items-center justify-between">
         <div class="flex items-center gap-2">
-          <span class="card-title">CATALOG IMPACT MATRIX · AST CLASSIFIER</span>
+          <span class="card-title">MATRIZ DE IMPACTO · TEMPLATES</span>
           <details class="hint">
             <summary>?</summary>
             <div>
-              Classificador estático fail-closed. Templates com métodos mutáveis, payloads intrusivos ou protocolos fora da whitelist são rebaixados automaticamente.
+              Classificador estático de impacto. Templates com métodos mutáveis, payloads intrusivos ou protocolos fora da whitelist são categorizados.
             </div>
           </details>
         </div>
         <a href="/templates?impact_class=safe_read_only" class="text-[11px] font-mono text-[#34d399] hover:underline">
-          filter safe_read_only →
+          filtrar safe_read_only →
         </a>
       </div>
 
@@ -223,36 +221,23 @@ const auditEvents = health.recent_audit_events?.length
       </table>
     </div>
 
-    <!-- Right 5 Cols: ENGINE / CONTROL PLANE POSTURE (CONVERSATION CACHE style) -->
+    <!-- Right 5 Cols: ENGINE / CONTROL PLANE POSTURE -->
     <div class="lg:col-span-5 card overflow-hidden flex flex-col justify-between">
       <div class="px-4 py-3 border-b border-[#1b2230] flex items-center justify-between">
-        <span class="card-title">CONTROL PLANE / ENGINE TELEMETRY</span>
-        <span class="font-mono text-[10px] text-[#34d399]">FAIL-CLOSED</span>
+        <span class="card-title">TELEMETRIA DE SERVIÇOS</span>
       </div>
 
       <div class="p-4 grid grid-cols-2 gap-3 num text-xs">
         <div class="p-2.5 rounded-lg bg-[#11161f] border border-[#1b2230]">
-          <div class="text-[10px] text-[#738196] uppercase">PostgreSQL 16 Latency</div>
+          <div class="text-[10px] text-[#738196] uppercase">Banco de Dados (PostgreSQL)</div>
           <div class="text-base font-semibold text-white mt-0.5">{telemetry.db_latency_ms} ms</div>
-          <div class="text-[10px] text-[#34d399] mt-0.5">defer(raw_yaml) active</div>
+          <div class="text-[10px] text-[#34d399] mt-0.5">{health.db_connected ? "Conectado" : "Offline"}</div>
         </div>
 
         <div class="p-2.5 rounded-lg bg-[#11161f] border border-[#1b2230]">
-          <div class="text-[10px] text-[#738196] uppercase">Valkey 7.2 Bucket</div>
+          <div class="text-[10px] text-[#738196] uppercase">Cache & Rate-Limit (Valkey)</div>
           <div class="text-base font-semibold text-[#22d3ee] mt-0.5">{telemetry.valkey_latency_ms} ms</div>
-          <div class="text-[10px] text-[#8b98a9] mt-0.5">0.5 req/s · cap 2</div>
-        </div>
-
-        <div class="p-2.5 rounded-lg bg-[#11161f] border border-[#1b2230]">
-          <div class="text-[10px] text-[#738196] uppercase">Critical IP Invariant</div>
-          <div class="text-base font-semibold text-[#34d399] mt-0.5">0 Promoted</div>
-          <div class="text-[10px] text-[#8b98a9] mt-0.5">DNS IPs → Observation only</div>
-        </div>
-
-        <div class="p-2.5 rounded-lg bg-[#11161f] border border-[#1b2230]">
-          <div class="text-[10px] text-[#738196] uppercase">Redaction Profile</div>
-          <div class="text-base font-semibold text-[#fbbf24] mt-0.5">bounty-safe-v1</div>
-          <div class="text-[10px] text-[#8b98a9] mt-0.5">Auth/Cookies → [REDACTED]</div>
+          <div class="text-[10px] text-[#8b98a9] mt-0.5">{telemetry.rate_limit_rps > 0 ? `${telemetry.rate_limit_rps} req/s` : "Em repouso"}</div>
         </div>
       </div>
 
