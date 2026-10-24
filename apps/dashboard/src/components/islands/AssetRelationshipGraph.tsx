@@ -9,10 +9,10 @@ export interface AssetRelationshipGraphProps {
 }
 
 const SCOPE_COLORS: Record<string, string> = {
-  in_scope_explicit: "#10b981", // emerald-500
-  in_scope_derived: "#06b6d4",  // cyan-500
-  candidate: "#f59e0b",         // amber-500
-  out_of_scope: "#ef4444",      // red-500
+  in_scope_explicit: "#34d399",
+  in_scope_derived: "#22d3ee",
+  candidate: "#fbbf24",
+  out_of_scope: "#f87171",
 };
 
 export default function AssetRelationshipGraph({
@@ -26,6 +26,7 @@ export default function AssetRelationshipGraph({
     initialSlug || (programs[0]?.slug ?? "nmap-scanme")
   );
   const [viewMode, setViewMode] = useState<"graph" | "table">("graph");
+  const [inspectorTab, setInspectorTab] = useState<"summary" | "dns" | "http" | "json">("summary");
   const [graphData, setGraphData] = useState<any>(
     initialGraph || { nodes: [], edges: [] }
   );
@@ -36,6 +37,17 @@ export default function AssetRelationshipGraph({
 
   useEffect(() => {
     if (selectedSlug) {
+      if (
+        selectedSlug === initialSlug &&
+        initialGraph?.nodes &&
+        initialGraph.nodes.length > 0
+      ) {
+        const firstAsset =
+          initialGraph.nodes.find((n: any) => n.node_type === "asset" || n.data?.type === "asset") ||
+          initialGraph.nodes[0];
+        setSelectedNode(firstAsset?.data ? firstAsset.data : firstAsset);
+        return;
+      }
       fetchAssetGraphAndList(selectedSlug);
     }
   }, [selectedSlug]);
@@ -49,9 +61,10 @@ export default function AssetRelationshipGraph({
       ]);
       if (graphRes.ok) {
         const gData = await graphRes.json();
-        setGraphData(gData);
-        if (gData.nodes?.length > 0 && !selectedNode) {
-          setSelectedNode(gData.nodes[0]);
+        if (gData.nodes?.length > 0) {
+          setGraphData(gData);
+          const firstAsset = gData.nodes.find((n: any) => n.node_type === "asset") || gData.nodes[0];
+          setSelectedNode(firstAsset);
         }
       }
       if (assetsRes.ok) {
@@ -59,20 +72,24 @@ export default function AssetRelationshipGraph({
         setAssets(Array.isArray(aData) ? aData : aData.assets || []);
       }
     } catch {
-      // Fallback sample topological graph if backend is offline
-      if (!graphData?.nodes?.length) {
+      // Offline fallback below
+    } finally {
+      setGraphData((curr: any) => {
+        if (curr?.nodes?.length > 0) return curr;
         const fallbackNodes = [
+          {
+            id: `program:${slug}`,
+            label: slug,
+            node_type: "program",
+            metadata: { slug, platform: "hackerone", state: "active" },
+          },
           {
             id: "asset:scanme.nmap.org",
             label: "scanme.nmap.org",
             node_type: "asset",
             scope_state: "in_scope_explicit",
             asset_type: "domain",
-            metadata: {
-              canonical_key: "scanme.nmap.org",
-              scopable: true,
-              findings_count: 1,
-            },
+            metadata: { canonical_key: "scanme.nmap.org", scopable: true, findings_count: 1 },
           },
           {
             id: "ip:45.33.32.156",
@@ -80,11 +97,7 @@ export default function AssetRelationshipGraph({
             node_type: "observed_ip",
             scope_state: "dns_metadata_only",
             asset_type: "ip",
-            metadata: {
-              ip: "45.33.32.156",
-              scopable: false,
-              invariant_note: "DNS METADATA ONLY — NOT IN SCOPE",
-            },
+            metadata: { ip: "45.33.32.156", scopable: false, dns_metadata_only: true },
           },
           {
             id: "tech:apache",
@@ -100,88 +113,93 @@ export default function AssetRelationshipGraph({
           },
         ];
         const fallbackEdges = [
-          { source: "asset:scanme.nmap.org", target: "ip:45.33.32.156", relation: "resolves_to_dns_meta" },
-          { source: "asset:scanme.nmap.org", target: "tech:apache", relation: "runs_technology" },
-          { source: "asset:scanme.nmap.org", target: "tech:cloudflare", relation: "fronted_by_cdn" },
+          { source: `program:${slug}`, target: "asset:scanme.nmap.org", relation: "HAS_ASSET" },
+          { source: "asset:scanme.nmap.org", target: "ip:45.33.32.156", relation: "RESOLVES_TO" },
+          { source: "asset:scanme.nmap.org", target: "tech:apache", relation: "RUNS_TECH" },
+          { source: "asset:scanme.nmap.org", target: "tech:cloudflare", relation: "RUNS_TECH" },
         ];
-        setGraphData({ program_slug: slug, nodes: fallbackNodes, edges: fallbackEdges });
-        setSelectedNode(fallbackNodes[0]);
-      }
-    } finally {
+        setSelectedNode(fallbackNodes[1]);
+        return { program_slug: slug, nodes: fallbackNodes, edges: fallbackEdges };
+      });
       setLoading(false);
     }
   }
 
-  // Compute deterministic radial/layered positions for SVG nodes
+  // Deterministic non-colliding layered layout (Program root at y=68, columns start at y=155)
   const positionedGraph = useMemo(() => {
-    const nodes: any[] = graphData?.nodes || [];
-    const edges: any[] = graphData?.edges || [];
+    const rawNodes: any[] = graphData?.nodes || [];
+    const rawEdges: any[] = graphData?.edges || [];
 
+    const nodes = rawNodes.map((n) => (n.data ? { ...n.data, node_type: n.data.type || n.node_type } : n));
+    const edges = rawEdges.map((e) => (e.data ? e.data : e));
+
+    const programNodes = nodes.filter((n) => n.node_type === "program");
     const assetNodes = nodes.filter((n) => n.node_type === "asset");
-    const ipNodes = nodes.filter((n) => n.node_type === "observed_ip");
+    const ipNodes = nodes.filter((n) => n.node_type === "observed_ip" || n.node_type === "observation_ip");
     const techNodes = nodes.filter((n) => n.node_type === "technology");
 
     const posMap: Record<string, { x: number; y: number; node: any }> = {};
 
-    // Column 1 (Center): Assets
+    // Top Center: Program Root Node (y=68) — never collides with assets
+    programNodes.forEach((n, idx) => {
+      posMap[n.id] = { x: 440 + idx * 180, y: 68, node: n };
+    });
+
+    // Center Column: Scoped Assets (starting at y=160)
     assetNodes.forEach((n, idx) => {
-      const y = 110 + idx * Math.max(90, Math.min(140, 420 / Math.max(1, assetNodes.length)));
-      posMap[n.id] = { x: 430, y, node: n };
+      posMap[n.id] = { x: 440, y: 160 + idx * 88, node: n };
     });
 
-    // Column 2 (Left): Observed DNS IPs (Critical IP Invariant)
+    // Left Column: Observed DNS IPs (starting at y=160)
     ipNodes.forEach((n, idx) => {
-      const y = 110 + idx * Math.max(85, Math.min(130, 420 / Math.max(1, ipNodes.length)));
-      posMap[n.id] = { x: 145, y, node: n };
+      posMap[n.id] = { x: 145, y: 160 + idx * 84, node: n };
     });
 
-    // Column 3 (Right): Technologies & Pruned CDN/WAFs
+    // Right Column: Technologies & Pruned CDN/WAFs (starting at y=150)
     techNodes.forEach((n, idx) => {
-      const y = 95 + idx * Math.max(70, Math.min(110, 440 / Math.max(1, techNodes.length)));
-      posMap[n.id] = { x: 725, y, node: n };
+      posMap[n.id] = { x: 735, y: 150 + idx * 74, node: n };
     });
 
-    // Fallback for any other node types
+    // Any remaining nodes
     nodes.forEach((n, idx) => {
       if (!posMap[n.id]) {
-        posMap[n.id] = { x: 430, y: 80 + idx * 70, node: n };
+        posMap[n.id] = { x: 440, y: 160 + (assetNodes.length + idx) * 84, node: n };
       }
     });
 
-    return { posMap, nodes, edges };
+    const maxCount = Math.max(assetNodes.length, ipNodes.length, techNodes.length, 3);
+    const canvasHeight = Math.max(460, 190 + maxCount * 88);
+
+    return { posMap, nodes, edges, canvasHeight };
   }, [graphData]);
 
-  // Match asset observations when an asset node is selected
   const selectedAssetDetails = useMemo(() => {
     if (!selectedNode) return null;
     const key = selectedNode.metadata?.canonical_key || selectedNode.label;
     return assets.find((a) => a.canonical_key === key || a.id === selectedNode.id) || null;
   }, [selectedNode, assets]);
 
-  return (
-    <div class="space-y-5 text-slate-100">
-      {/* Header Controls & View Switcher */}
-      <div class="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
-        <div class="flex items-center gap-3">
-          <div class="h-10 w-10 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold font-mono">
-            G3
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-slate-100">
-              Superfície de Ataque & Grafo Topológico de Ativos
-            </h2>
-            <p class="text-xs text-slate-400">
-              Separação estrita entre Ativos Escopáveis, IPs de Metadado DNS (`scopable: false`) e Stack/CDN
-            </p>
-          </div>
-        </div>
+  const dnsObservations = useMemo(() => {
+    return (selectedAssetDetails?.observations || []).filter((o: any) => o.observation_type === "dns");
+  }, [selectedAssetDetails]);
 
-        <div class="flex flex-wrap items-center gap-3">
+  const httpObservations = useMemo(() => {
+    return (selectedAssetDetails?.observations || []).filter((o: any) =>
+      ["http", "http_probe"].includes(o.observation_type)
+    );
+  }, [selectedAssetDetails]);
+
+  return (
+    <div class="space-y-4">
+      {/* Compact Top Control Bar */}
+      <div class="card card-pad flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="card-title">TOPOLOGY &amp; SURFACE EXPLORER</span>
           {programs.length > 0 && (
             <select
               value={selectedSlug}
               onChange={(e) => setSelectedSlug((e.target as HTMLSelectElement).value)}
-              class="bg-slate-950 border border-slate-700 text-slate-100 text-xs rounded-lg px-3 py-2 font-mono"
+              class="input !w-auto min-w-[200px]"
             >
               {programs.map((p) => (
                 <option key={p.slug} value={p.slug}>
@@ -190,137 +208,121 @@ export default function AssetRelationshipGraph({
               ))}
             </select>
           )}
-
-          <div class="inline-flex rounded-lg bg-slate-950 p-1 border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setViewMode("graph")}
-              class={`px-3 py-1.5 rounded-md text-xs font-mono transition ${
-                viewMode === "graph"
-                  ? "bg-cyan-500 text-slate-950 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Visão em Grafo Topológico
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("table")}
-              class={`px-3 py-1.5 rounded-md text-xs font-mono transition ${
-                viewMode === "table"
-                  ? "bg-cyan-500 text-slate-950 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Visão em Tabela de Ativos ({assets.length})
-            </button>
-          </div>
+          <span class="pill text-[#22d3ee] num">{positionedGraph.nodes.length} nodes</span>
+          <span class="pill num">{positionedGraph.edges.length} edges</span>
         </div>
-      </div>
 
-      {/* Critical IP Invariant Banner */}
-      <div class="bg-purple-950/30 border border-purple-500/40 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-        <div class="flex items-center gap-2.5">
-          <span class="px-2 py-0.5 rounded bg-purple-500/20 border border-purple-400/50 text-purple-300 font-mono font-bold text-[10px] uppercase">
-            Invariante Crítica de IP Ativa
-          </span>
-          <span class="text-slate-300">
-            IPs resolvidos via DNS (<code class="text-purple-300 font-mono">a_records</code>) permanecem exclusivamente em{" "}
-            <code class="text-purple-300 font-mono">Observation.metadata_json</code> e nunca são promovidos à tabela <code class="text-emerald-300 font-mono">assets</code>.
-          </span>
+        <div class="seg" role="tablist">
+          <button
+            type="button"
+            aria-selected={viewMode === "graph"}
+            onClick={() => setViewMode("graph")}
+          >
+            Topological Graph
+          </button>
+          <button
+            type="button"
+            aria-selected={viewMode === "table"}
+            onClick={() => setViewMode("table")}
+          >
+            Assets Table ({assets.length})
+          </button>
         </div>
-        <span class="font-mono text-[11px] text-purple-300">
-          [DNS METADATA ONLY — NOT IN SCOPE]
-        </span>
       </div>
 
       {viewMode === "graph" ? (
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Interactive SVG Canvas (8 cols) */}
-          <div class="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg flex flex-col">
-            <div class="flex items-center justify-between px-4 py-2.5 bg-slate-950 border-b border-slate-800 text-xs">
-              <div class="flex flex-wrap items-center gap-4">
-                <span class="flex items-center gap-1.5">
-                  <span class="h-2.5 w-2.5 rounded-full bg-emerald-500 inline-block"></span>
-                  <span class="text-slate-300 font-mono text-[11px]">in_scope_explicit</span>
+          <div class="lg:col-span-8 card overflow-hidden flex flex-col">
+            <div class="px-4 py-2.5 border-b border-[#1b2230] flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="flex items-center gap-1.5 text-[#34d399]">
+                  <span class="dot"></span> explicit
                 </span>
-                <span class="flex items-center gap-1.5">
-                  <span class="h-2.5 w-2.5 rounded-full bg-cyan-500 inline-block"></span>
-                  <span class="text-slate-300 font-mono text-[11px]">in_scope_derived</span>
+                <span class="flex items-center gap-1.5 text-[#22d3ee]">
+                  <span class="dot"></span> derived
                 </span>
-                <span class="flex items-center gap-1.5">
-                  <span class="h-2.5 w-2.5 rounded-full bg-purple-400 border border-dashed border-purple-200 inline-block"></span>
-                  <span class="text-purple-300 font-mono text-[11px]">DNS Metadata IP (Unscoped)</span>
+                <span class="flex items-center gap-1.5 text-[#a78bfa]">
+                  <span class="dot"></span> observed_ip (DNS only)
                 </span>
-                <span class="flex items-center gap-1.5">
-                  <span class="h-2.5 w-2.5 rounded-full bg-amber-500 inline-block"></span>
-                  <span class="text-amber-300 font-mono text-[11px]">CDN/WAF Pruned</span>
+                <span class="flex items-center gap-1.5 text-[#fbbf24]">
+                  <span class="dot"></span> CDN pruned
                 </span>
               </div>
 
-              <div class="flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5 num">
                 <button
                   type="button"
-                  onClick={() => setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))}
-                  class="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded text-slate-300 font-mono"
+                  onClick={() => setZoom((z) => Math.max(0.65, +(z - 0.15).toFixed(2)))}
+                  class="btn !min-h-[24px] !px-2"
                 >
                   -
                 </button>
-                <span class="font-mono text-[11px] text-slate-400 w-12 text-center">
-                  {Math.round(zoom * 100)}%
-                </span>
+                <span class="text-[#8b98a9] w-11 text-center">{Math.round(zoom * 100)}%</span>
                 <button
                   type="button"
-                  onClick={() => setZoom((z) => Math.min(1.5, +(z + 0.15).toFixed(2)))}
-                  class="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded text-slate-300 font-mono"
+                  onClick={() => setZoom((z) => Math.min(1.45, +(z + 0.15).toFixed(2)))}
+                  class="btn !min-h-[24px] !px-2"
                 >
                   +
                 </button>
               </div>
             </div>
 
-            <div class="relative flex-1 min-h-[480px] bg-slate-950/70 overflow-auto">
+            <div class="relative flex-1 bg-[#070a0f] overflow-auto">
               {loading && (
-                <div class="absolute inset-0 flex items-center justify-center bg-slate-950/60 z-10 text-xs font-mono text-cyan-400">
-                  Renderizando grafo topológico...
+                <div class="absolute inset-0 flex items-center justify-center bg-[#070a0f]/75 z-10 text-xs font-mono text-[#22d3ee]">
+                  Rendering topology...
                 </div>
               )}
 
               <svg
-                viewBox="0 0 880 540"
-                class="w-full h-[500px] select-none"
-                style={{ transform: `scale(${zoom})`, transformOrigin: "center center" }}
+                viewBox={`0 0 880 ${positionedGraph.canvasHeight}`}
+                class="w-full select-none block"
+                style={{
+                  minHeight: "460px",
+                  height: `${positionedGraph.canvasHeight}px`,
+                  transform: `scale(${zoom})`,
+                  transformOrigin: "center top",
+                }}
               >
                 <defs>
-                  <pattern id="secops-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-                    <path
-                      d="M 32 0 L 0 0 0 32"
-                      fill="none"
-                      stroke="#1e293b"
-                      stroke-width="0.7"
-                    />
+                  <pattern id="pf-grid" width="28" height="28" patternUnits="userSpaceOnUse">
+                    <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#141b26" stroke-width="0.8" />
                   </pattern>
                 </defs>
-                <rect width="880" height="540" fill="url(#secops-grid)" />
+                <rect width="880" height={positionedGraph.canvasHeight} fill="url(#pf-grid)" />
 
-                {/* Column Headers inside SVG */}
-                <text x="145" y="36" text-anchor="middle" fill="#a855f7" font-size="11" font-family="monospace" font-weight="bold">
-                  OBSERVED DNS IPs (METADATA ONLY)
+                {/* Column Titles */}
+                <text x="145" y="26" text-anchor="middle" fill="#a78bfa" font-size="10" font-family="monospace">
+                  OBSERVED DNS IPs (SCOPABLE=FALSE)
                 </text>
-                <text x="430" y="36" text-anchor="middle" fill="#10b981" font-size="11" font-family="monospace" font-weight="bold">
-                  SCOPED ASSETS (CANONICAL KEYS)
+                <text x="440" y="26" text-anchor="middle" fill="#34d399" font-size="10" font-family="monospace">
+                  PROGRAM &amp; SCOPED ASSETS
                 </text>
-                <text x="725" y="36" text-anchor="middle" fill="#06b6d4" font-size="11" font-family="monospace" font-weight="bold">
-                  DETECTED TECH &amp; PRUNED CDN/WAF
+                <text x="735" y="26" text-anchor="middle" fill="#22d3ee" font-size="10" font-family="monospace">
+                  TECH STACK &amp; PRUNED CDN
                 </text>
 
-                {/* Edges */}
+                {/* Edges with Animated Flow on Active Selection */}
                 {positionedGraph.edges.map((edge, idx) => {
                   const src = positionedGraph.posMap[edge.source];
                   const dst = positionedGraph.posMap[edge.target];
                   if (!src || !dst) return null;
-                  const isDnsMeta = edge.relation.includes("dns") || dst.node.node_type === "observed_ip";
+                  const isDnsMeta =
+                    edge.relation.toLowerCase().includes("resolve") ||
+                    dst.node.node_type === "observed_ip";
                   const isPrunedCdn = Boolean(dst.node.metadata?.is_pruned_cdn);
+                  const isConnectedToSelected =
+                    selectedNode &&
+                    (edge.source === selectedNode.id || edge.target === selectedNode.id);
+
+                  const stroke = isDnsMeta
+                    ? "#a78bfa"
+                    : isPrunedCdn
+                    ? "#fbbf24"
+                    : "#22d3ee";
+
                   return (
                     <g key={idx}>
                       <line
@@ -328,17 +330,22 @@ export default function AssetRelationshipGraph({
                         y1={src.y}
                         x2={dst.x}
                         y2={dst.y}
-                        stroke={isDnsMeta ? "#a855f7" : isPrunedCdn ? "#f59e0b" : "#38bdf8"}
-                        stroke-width="1.8"
-                        stroke-dasharray={isDnsMeta || isPrunedCdn ? "5,5" : "none"}
-                        opacity="0.65"
+                        stroke={stroke}
+                        stroke-width={isConnectedToSelected ? "2.2" : "1.4"}
+                        stroke-dasharray={isConnectedToSelected ? "6,4" : isDnsMeta || isPrunedCdn ? "4,4" : "none"}
+                        style={
+                          isConnectedToSelected
+                            ? { animation: "flow 1.2s linear infinite" }
+                            : undefined
+                        }
+                        opacity={isConnectedToSelected ? "0.95" : "0.45"}
                       />
                       <text
                         x={(src.x + dst.x) / 2}
-                        y={(src.y + dst.y) / 2 - 6}
+                        y={(src.y + dst.y) / 2 - 5}
                         text-anchor="middle"
-                        fill="#94a3b8"
-                        font-size="9"
+                        fill="#738196"
+                        font-size="8.5"
                         font-family="monospace"
                       >
                         {edge.relation}
@@ -353,7 +360,7 @@ export default function AssetRelationshipGraph({
                   if (!pos) return null;
                   const isSelected = selectedNode?.id === node.id;
 
-                  if (node.node_type === "observed_ip") {
+                  if (node.node_type === "program") {
                     return (
                       <g
                         key={node.id}
@@ -362,21 +369,49 @@ export default function AssetRelationshipGraph({
                         style={{ cursor: "pointer" }}
                       >
                         <rect
-                          x="-115"
-                          y="-28"
-                          width="230"
-                          height="56"
+                          x="-105"
+                          y="-20"
+                          width="210"
+                          height="40"
+                          rx="20"
+                          fill="#11161f"
+                          stroke={isSelected ? "#34d399" : "#263042"}
+                          stroke-width={isSelected ? "2.2" : "1.4"}
+                        />
+                        <text x="0" y="-2" text-anchor="middle" fill="#e6edf3" font-size="11" font-family="monospace" font-weight="bold">
+                          ● {node.label}
+                        </text>
+                        <text x="0" y="11" text-anchor="middle" fill="#34d399" font-size="8.5" font-family="monospace">
+                          PROGRAM ROOT
+                        </text>
+                      </g>
+                    );
+                  }
+
+                  if (node.node_type === "observed_ip" || node.node_type === "observation_ip") {
+                    return (
+                      <g
+                        key={node.id}
+                        transform={`translate(${pos.x}, ${pos.y})`}
+                        onClick={() => setSelectedNode(node)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <rect
+                          x="-110"
+                          y="-24"
+                          width="220"
+                          height="48"
                           rx="8"
-                          fill="#1e1b4b"
-                          stroke={isSelected ? "#e879f9" : "#a855f7"}
-                          stroke-width={isSelected ? "2.5" : "1.5"}
+                          fill="#131129"
+                          stroke={isSelected ? "#c4b5fd" : "#a78bfa"}
+                          stroke-width={isSelected ? "2.4" : "1.4"}
                           stroke-dasharray="5,4"
                         />
-                        <text x="0" y="-5" text-anchor="middle" fill="#f3e8ff" font-size="12" font-family="monospace" font-weight="bold">
+                        <text x="0" y="-3" text-anchor="middle" fill="#ede9fe" font-size="11.5" font-family="monospace" font-weight="bold">
                           {node.label}
                         </text>
-                        <text x="0" y="14" text-anchor="middle" fill="#d8b4fe" font-size="8.5" font-family="monospace">
-                          [DNS METADATA ONLY — NOT IN SCOPE]
+                        <text x="0" y="12" text-anchor="middle" fill="#a78bfa" font-size="8.5" font-family="monospace">
+                          DNS METADATA ONLY · UNSCOPED
                         </text>
                       </g>
                     );
@@ -392,21 +427,21 @@ export default function AssetRelationshipGraph({
                         style={{ cursor: "pointer" }}
                       >
                         <rect
-                          x="-105"
-                          y="-24"
-                          width="210"
-                          height="48"
-                          rx="20"
-                          fill={isPruned ? "#451a03" : "#083344"}
-                          stroke={isPruned ? "#f59e0b" : "#06b6d4"}
-                          stroke-width={isSelected ? "2.5" : "1.5"}
+                          x="-98"
+                          y="-21"
+                          width="196"
+                          height="42"
+                          rx="18"
+                          fill={isPruned ? "#231707" : "#09222c"}
+                          stroke={isPruned ? "#fbbf24" : "#22d3ee"}
+                          stroke-width={isSelected ? "2.4" : "1.4"}
                         />
                         <text
                           x="0"
-                          y="-3"
+                          y="-2"
                           text-anchor="middle"
-                          fill={isPruned ? "#fcd34d" : "#a5f3fc"}
-                          font-size="12"
+                          fill={isPruned ? "#fde68a" : "#cffafe"}
+                          font-size="11.5"
                           font-family="monospace"
                           font-weight="bold"
                           text-decoration={isPruned ? "line-through" : "none"}
@@ -415,20 +450,19 @@ export default function AssetRelationshipGraph({
                         </text>
                         <text
                           x="0"
-                          y="13"
+                          y="11"
                           text-anchor="middle"
-                          fill={isPruned ? "#f87171" : "#38bdf8"}
-                          font-size="8.5"
+                          fill={isPruned ? "#fbbf24" : "#22d3ee"}
+                          font-size="8"
                           font-family="monospace"
                         >
-                          {isPruned ? "[CDN/WAF PRUNED]" : "[APP STACK TARGET]"}
+                          {isPruned ? "CDN/WAF PRUNED" : "APP STACK TARGET"}
                         </text>
                       </g>
                     );
                   }
 
-                  // Default: Asset Node
-                  const strokeColor = SCOPE_COLORS[node.scope_state || "in_scope_explicit"] || "#10b981";
+                  const strokeColor = SCOPE_COLORS[node.scope_state || "in_scope_explicit"] || "#34d399";
                   return (
                     <g
                       key={node.id}
@@ -438,20 +472,20 @@ export default function AssetRelationshipGraph({
                     >
                       <rect
                         x="-115"
-                        y="-28"
+                        y="-25"
                         width="230"
-                        height="56"
-                        rx="10"
-                        fill="#0f172a"
+                        height="50"
+                        rx="9"
+                        fill="#0d1117"
                         stroke={strokeColor}
-                        stroke-width={isSelected ? "3" : "2"}
+                        stroke-width={isSelected ? "2.6" : "1.6"}
                       />
-                      <circle cx="-95" cy="-6" r="5" fill={strokeColor} />
-                      <text x="5" y="-3" text-anchor="middle" fill="#f8fafc" font-size="12" font-family="monospace" font-weight="bold">
+                      <circle cx="-96" cy="-4" r="4" fill={strokeColor} />
+                      <text x="4" y="-2" text-anchor="middle" fill="#e6edf3" font-size="11.5" font-family="monospace" font-weight="bold">
                         {node.label}
                       </text>
-                      <text x="0" y="15" text-anchor="middle" fill={strokeColor} font-size="9" font-family="monospace">
-                        {node.scope_state || "in_scope_explicit"} ({node.asset_type || "domain"})
+                      <text x="0" y="13" text-anchor="middle" fill={strokeColor} font-size="8.5" font-family="monospace">
+                        {node.scope_state || "in_scope_explicit"} · {node.asset_type || "domain"}
                       </text>
                     </g>
                   );
@@ -460,159 +494,187 @@ export default function AssetRelationshipGraph({
             </div>
           </div>
 
-          {/* Side Inspector Drawer (4 cols) */}
-          <div class="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
-            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div>
-                <span class="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
-                  Inspetor de Nó Topológico
-                </span>
-                <h3 class="text-sm font-semibold text-slate-100 mt-0.5 font-mono">
-                  {selectedNode ? selectedNode.label : "Selecione um nó no grafo"}
-                </h3>
+          {/* Right 4 Cols: Tabbed Node Inspector */}
+          <div class="lg:col-span-4 card card-pad flex flex-col justify-between space-y-3">
+            <div class="space-y-3">
+              <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
+                <div class="min-w-0">
+                  <span class="card-title">NODE INSPECTOR</span>
+                  <div class="font-mono text-sm font-semibold text-white truncate mt-0.5">
+                    {selectedNode ? selectedNode.label : "Select a node"}
+                  </div>
+                </div>
+                {selectedNode && (
+                  <span class="pill text-[#22d3ee]">{selectedNode.node_type}</span>
+                )}
               </div>
-              {selectedNode && (
-                <span class="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-slate-800 text-slate-300">
-                  {selectedNode.node_type}
-                </span>
+
+              {/* Inspector Tabs */}
+              <div class="seg w-full justify-between" role="tablist">
+                {(["summary", "dns", "http", "json"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    aria-selected={inspectorTab === tab}
+                    onClick={() => setInspectorTab(tab)}
+                    class="flex-1 justify-center uppercase"
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+
+              {!selectedNode ? (
+                <div class="py-12 text-center text-xs text-[#738196] font-mono">
+                  Click any node in the graph to inspect DNS/HTTP observations.
+                </div>
+              ) : inspectorTab === "summary" ? (
+                <div class="space-y-3 text-xs num">
+                  {selectedNode.node_type === "observed_ip" && (
+                    <div class="p-2.5 rounded-lg bg-purple-950/30 border border-[#a78bfa]/40 text-[#ede9fe] text-[11px]">
+                      <div class="font-semibold text-[#a78bfa]">CRITICAL IP INVARIANT</div>
+                      Observed via DNS resolution only (`scopable: false`). Never promoted to `Asset(type="ip")`.
+                    </div>
+                  )}
+
+                  {selectedNode.node_type === "technology" && selectedNode.metadata?.is_pruned_cdn && (
+                    <div class="p-2.5 rounded-lg bg-amber-950/30 border border-[#fbbf24]/40 text-[#fde68a] text-[11px]">
+                      <div class="font-semibold text-[#fbbf24]">PRUNED EDGE CDN/WAF TAG</div>
+                      Excluded by `DetectionPlanner` to prevent scanning multi-tenant edge infrastructure.
+                    </div>
+                  )}
+
+                  <div class="grid grid-cols-2 gap-2 p-2.5 rounded-lg bg-[#070a0f] border border-[#1b2230]">
+                    <div>
+                      <span class="text-[#738196] block text-[10px]">CANONICAL LABEL</span>
+                      <span class="text-white break-all">{selectedNode.label}</span>
+                    </div>
+                    <div>
+                      <span class="text-[#738196] block text-[10px]">SCOPE STATE</span>
+                      <span class="text-[#34d399]">
+                        {selectedNode.scope_state ||
+                          (selectedNode.node_type === "observed_ip" ? "dns_metadata_only" : selectedNode.node_type)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedAssetDetails?.technologies?.length > 0 && (
+                    <div>
+                      <span class="field-label">Detected Stack</span>
+                      <div class="flex flex-wrap gap-1.5">
+                        {selectedAssetDetails.technologies.map((t: string) => (
+                          <span key={t} class="pill text-[#22d3ee]">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : inspectorTab === "dns" ? (
+                <div class="space-y-2 text-xs num max-h-72 overflow-y-auto">
+                  {dnsObservations.length === 0 ? (
+                    <div class="text-[#738196] py-6 text-center">No DNS observations on selected node.</div>
+                  ) : (
+                    dnsObservations.map((o: any) => (
+                      <div key={o.id} class="p-2.5 rounded bg-[#070a0f] border border-[#1b2230] space-y-1">
+                        <div class="text-[#a78bfa] font-semibold">DNS Observation</div>
+                        <pre class="text-[11px] text-[#e6edf3] overflow-x-auto">
+                          {JSON.stringify(o.metadata_json, null, 2)}
+                        </pre>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : inspectorTab === "http" ? (
+                <div class="space-y-2 text-xs num max-h-72 overflow-y-auto">
+                  {httpObservations.length === 0 ? (
+                    <div class="text-[#738196] py-6 text-center">No HTTP probe observations on selected node.</div>
+                  ) : (
+                    httpObservations.map((o: any) => (
+                      <div key={o.id} class="p-2.5 rounded bg-[#070a0f] border border-[#1b2230] space-y-1">
+                        <div class="text-[#22d3ee] font-semibold">HTTP Probe</div>
+                        <pre class="text-[11px] text-[#e6edf3] overflow-x-auto">
+                          {JSON.stringify(o.metadata_json, null, 2)}
+                        </pre>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <pre class="p-2.5 rounded bg-[#070a0f] border border-[#1b2230] text-[11px] num text-[#22d3ee] overflow-x-auto max-h-72">
+                  {JSON.stringify(selectedAssetDetails || selectedNode, null, 2)}
+                </pre>
               )}
             </div>
 
-            {!selectedNode ? (
-              <p class="text-xs text-slate-500 py-8 text-center">
-                Clique em qualquer Ativo, IP de Metadado DNS ou Tecnologia no grafo para inspecionar seus metadados e observações.
-              </p>
-            ) : (
-              <div class="space-y-4 text-xs">
-                {selectedNode.node_type === "observed_ip" && (
-                  <div class="bg-purple-950/40 border border-purple-500/50 rounded-lg p-3 text-purple-200 font-mono text-[11px]">
-                    <div class="font-bold text-purple-300 mb-1">
-                      [DNS METADATA ONLY — NOT IN SCOPE]
-                    </div>
-                    Este endereço IP foi observado na resolução DNS (`dnsx`), mas a Invariante Crítica de IP proíbe que IPs derivados de DNS sejam inseridos como ativos escopáveis (`scopable: false`).
-                  </div>
-                )}
-
-                {selectedNode.node_type === "technology" && selectedNode.metadata?.is_pruned_cdn && (
-                  <div class="bg-amber-950/40 border border-amber-500/50 rounded-lg p-3 text-amber-200 font-mono text-[11px]">
-                    <div class="font-bold text-amber-300 mb-1">
-                      [CDN/WAF PRUNED BY DETECTION PLANNER]
-                    </div>
-                    Tecnologia de borda/WAF (`{selectedNode.label}`) podada automaticamente pelo `DetectionPlanner` para evitar falso-positivos e ruído contra infraestrutura de terceiros.
-                  </div>
-                )}
-
-                <div class="grid grid-cols-2 gap-2 bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono">
-                  <div>
-                    <span class="text-slate-500 block text-[10px]">CANONICAL KEY / ID</span>
-                    <span class="text-slate-100 break-all">{selectedNode.label}</span>
-                  </div>
-                  <div>
-                    <span class="text-slate-500 block text-[10px]">SCOPE STATE</span>
-                    <span class="text-emerald-400">
-                      {selectedNode.scope_state || (selectedNode.node_type === "observed_ip" ? "dns_metadata_only" : "technology_tag")}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <span class="text-[11px] font-mono uppercase text-slate-400 block mb-1.5">
-                    Metadados &amp; Observações (DNS / HTTP Probe JSON):
-                  </span>
-                  <pre class="bg-slate-950 border border-slate-800 rounded-lg p-3 text-[11px] font-mono text-cyan-300 overflow-x-auto max-h-64">
-                    {JSON.stringify(
-                      selectedAssetDetails
-                        ? {
-                            canonical_key: selectedAssetDetails.canonical_key,
-                            scope_state: selectedAssetDetails.scope_state,
-                            technologies: selectedAssetDetails.technologies,
-                            observations: selectedAssetDetails.observations,
-                          }
-                        : selectedNode.metadata || selectedNode,
-                      null,
-                      2
-                    )}
-                  </pre>
-                </div>
-
-                {selectedNode.node_type === "asset" && (
-                  <a
-                    href={`/scans?program=${encodeURIComponent(selectedSlug)}&asset=${encodeURIComponent(
-                      selectedNode.metadata?.canonical_key || selectedNode.label
-                    )}`}
-                    class="block w-full text-center bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs py-2.5 px-4 rounded-lg transition font-mono uppercase tracking-wider"
-                  >
-                    Simular Plano de Scan neste Ativo →
-                  </a>
-                )}
-              </div>
+            {selectedNode?.node_type === "asset" && (
+              <a
+                href={`/scans?program=${encodeURIComponent(selectedSlug)}&asset=${encodeURIComponent(
+                  selectedNode.metadata?.canonical_key || selectedNode.label
+                )}`}
+                class="btn btn-primary w-full"
+              >
+                Plan Surgical Scan on Asset →
+              </a>
             )}
           </div>
         </div>
       ) : (
-        /* Table View */
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+        /* SESSION BENCHMARKS Style Assets Table */
+        <div class="card overflow-hidden">
           <div class="overflow-x-auto">
-            <table class="w-full text-left border-collapse text-xs">
+            <table class="dtable num">
               <thead>
-                <tr class="bg-slate-950 text-slate-400 font-mono uppercase border-b border-slate-800">
-                  <th class="py-3 px-4">Canonical Key</th>
-                  <th class="py-3 px-4">Tipo</th>
-                  <th class="py-3 px-4">Scope State</th>
-                  <th class="py-3 px-4">Tecnologias Detectadas</th>
-                  <th class="py-3 px-4">Observações (DNS / HTTP)</th>
-                  <th class="py-3 px-4 text-right">Ação</th>
+                <tr>
+                  <th>Canonical Key</th>
+                  <th>Type</th>
+                  <th>Scope State</th>
+                  <th>Detected Tech</th>
+                  <th class="r">Observations</th>
+                  <th class="r">Action</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-slate-800/70">
+              <tbody>
                 {assets.length === 0 ? (
                   <tr>
-                    <td colSpan={6} class="py-8 text-center text-slate-500 font-mono">
-                      Nenhum ativo registrado para este programa.
+                    <td colSpan={6} class="py-8 text-center text-[#738196]">
+                      No assets registered for this program.
                     </td>
                   </tr>
                 ) : (
                   assets.map((asset) => (
-                    <tr key={asset.id || asset.canonical_key} class="hover:bg-slate-800/40 transition">
-                      <td class="py-3 px-4 font-mono font-semibold text-slate-100">
-                        {asset.canonical_key}
-                      </td>
-                      <td class="py-3 px-4 font-mono text-slate-300">{asset.asset_type}</td>
-                      <td class="py-3 px-4">
+                    <tr key={asset.id || asset.canonical_key}>
+                      <td class="font-semibold text-white">{asset.canonical_key}</td>
+                      <td class="text-[#8b98a9]">{asset.asset_type}</td>
+                      <td>
                         <span
-                          class="px-2 py-0.5 rounded font-mono text-[11px]"
+                          class="pill"
                           style={{
-                            backgroundColor: `${SCOPE_COLORS[asset.scope_state] || "#10b981"}20`,
-                            color: SCOPE_COLORS[asset.scope_state] || "#10b981",
-                            border: `1px solid ${SCOPE_COLORS[asset.scope_state] || "#10b981"}50`,
+                            color: SCOPE_COLORS[asset.scope_state] || "#34d399",
                           }}
                         >
                           {asset.scope_state}
                         </span>
                       </td>
-                      <td class="py-3 px-4">
+                      <td>
                         <div class="flex flex-wrap gap-1">
                           {(asset.technologies || []).map((tech: string) => (
-                            <span
-                              key={tech}
-                              class="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-mono text-[10px]"
-                            >
+                            <span key={tech} class="pill text-[#22d3ee]">
                               {tech}
                             </span>
                           ))}
                         </div>
                       </td>
-                      <td class="py-3 px-4 font-mono text-slate-400">
-                        {(asset.observations || []).length} registros
-                      </td>
-                      <td class="py-3 px-4 text-right">
+                      <td class="r text-[#8b98a9]">{(asset.observations || []).length}</td>
+                      <td class="r">
                         <a
                           href={`/scans?program=${encodeURIComponent(selectedSlug)}&asset=${encodeURIComponent(
                             asset.canonical_key
                           )}`}
-                          class="inline-block bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded font-mono text-[11px] transition"
+                          class="text-[#34d399] hover:underline text-xs"
                         >
-                          Simular Plano de Scan neste Ativo
+                          Plan Scan →
                         </a>
                       </td>
                     </tr>

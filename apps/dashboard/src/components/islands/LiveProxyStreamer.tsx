@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useRef, useMemo } from "preact/hooks";
+import SparklineSVG from "../SparklineSVG";
 
 export interface LiveProxyStreamerProps {
   wsBaseUrl?: string;
   apiBaseUrl?: string;
+  initialSummary?: any;
 }
 
 const SAMPLE_EVENTS = [
@@ -13,8 +15,8 @@ const SAMPLE_EVENTS = [
     status: 200,
     verdict: "ALLOWED",
     tier: "EXPLICIT_ALLOW",
-    rate_limit: "0.5 req/s (Token Consumed: 1/1)",
-    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 [Cloaked]",
+    rate_limit: "0.50 req/s (Token 1/1)",
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) [Cloaked]",
     redacted_headers: ["Authorization: [REDACTED]", "Cookie: [REDACTED]"],
     sha256: "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
   },
@@ -25,7 +27,7 @@ const SAMPLE_EVENTS = [
     status: 403,
     verdict: "BLOCKED_SSRF",
     tier: "EXPLICIT_DENY",
-    rate_limit: "N/A (Dropped Pre-Egress)",
+    rate_limit: "Dropped Pre-Egress",
     user_agent: "Blocked by ScopeGuard SSRF Filter",
     redacted_headers: [],
     sha256: "dropped-link-local-metadata-ssrf",
@@ -37,7 +39,7 @@ const SAMPLE_EVENTS = [
     status: 404,
     verdict: "ALLOWED",
     tier: "EXPLICIT_ALLOW",
-    rate_limit: "0.5 req/s (Paced +2000ms via Valkey)",
+    rate_limit: "0.50 req/s (+2000ms paced)",
     user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) [Cloaked]",
     redacted_headers: ["X-Api-Key: [REDACTED]"],
     sha256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
@@ -49,7 +51,7 @@ const SAMPLE_EVENTS = [
     status: 403,
     verdict: "BLOCKED_SCOPE",
     tier: "UNKNOWN_DENY",
-    rate_limit: "N/A (Dropped Fail-Closed)",
+    rate_limit: "Dropped Fail-Closed",
     user_agent: "Blocked by Fail-Closed ScopeEngine",
     redacted_headers: [],
     sha256: "dropped-fail-closed-unknown-deny",
@@ -59,9 +61,26 @@ const SAMPLE_EVENTS = [
 export default function LiveProxyStreamer({
   wsBaseUrl = "ws://127.0.0.1:8000",
   apiBaseUrl = "http://127.0.0.1:8000",
+  initialSummary,
 }: LiveProxyStreamerProps) {
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [simulating, setSimulating] = useState<boolean>(true);
+  const [verdictFilter, setVerdictFilter] = useState<"ALL" | "ALLOWED" | "BLOCKED">("ALL");
+
+  // Live telemetry sparkline & gauge state
+  const [rpsSeries, setRpsSeries] = useState<number[]>(
+    initialSummary?.rps_series || [0.42, 0.48, 0.5, 0.49, 0.5, 0.45, 0.5, 0.48, 0.5, 0.5, 0.47, 0.5]
+  );
+  const [valkeySeries, setValkeySeries] = useState<number[]>(
+    initialSummary?.valkey_latency_ms_series || [0.8, 0.9, 0.7, 0.8, 1.1, 0.9, 0.8, 0.7, 0.9, 0.8, 0.8, 0.9]
+  );
+  const [ssrfSeries, setSsrfSeries] = useState<number[]>(
+    initialSummary?.ssrf_blocks_series || [0, 0, 1, 0, 0, 2, 0, 1, 0, 0, 1, 0]
+  );
+  const [rateLimitRps, setRateLimitRps] = useState<number>(0.5);
+  const [burstCapacity, setBurstCapacity] = useState<number>(1);
+  const [heartbeatCount, setHeartbeatCount] = useState<number>(0);
+
   const [events, setEvents] = useState<any[]>(() =>
     SAMPLE_EVENTS.map((ev, i) => ({
       ...ev,
@@ -88,23 +107,46 @@ export default function LiveProxyStreamer({
         ws.onmessage = (e) => {
           try {
             const payload = JSON.parse(e.data);
-            setEvents((prev) => [
-              {
-                id: `ws-${Date.now()}-${Math.random()}`,
-                timestamp: payload.timestamp || new Date().toISOString(),
-                method: payload.method || "GET",
-                url: payload.url || "https://scanme.nmap.org/",
-                host: payload.host || "scanme.nmap.org",
-                status: payload.status ?? 200,
-                verdict: payload.verdict || (payload.allowed === false ? "BLOCKED_SCOPE" : "ALLOWED"),
-                tier: payload.tier || payload.precedence_tier || "EXPLICIT_ALLOW",
-                rate_limit: payload.rate_limit || "0.5 req/s (Burst 1)",
-                user_agent: payload.user_agent || "Mozilla/5.0 [Cloaked]",
-                redacted_headers: payload.redacted_headers || ["Authorization: [REDACTED]"],
-                sha256: payload.sha256 || "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              },
-              ...prev.slice(0, 49),
-            ]);
+
+            // Fix Sector 2 Bug #3: Do NOT treat telemetry_tick / connected / pong frames as HTTP requests!
+            if (
+              payload.event === "telemetry_tick" ||
+              payload.event === "connected" ||
+              payload.event === "pong"
+            ) {
+              if (typeof payload.rate_limit_rps === "number") {
+                setRateLimitRps(payload.rate_limit_rps);
+                setRpsSeries((prev) => [...prev.slice(1), payload.rate_limit_rps]);
+              }
+              if (typeof payload.burst_capacity === "number") {
+                setBurstCapacity(payload.burst_capacity);
+              }
+              setHeartbeatCount((c) => c + 1);
+              return;
+            }
+
+            // Real HTTP egress or ScopeGuard block event
+            if (payload.event === "http_egress" || payload.url || payload.method) {
+              setEvents((prev) => [
+                {
+                  id: `ws-${Date.now()}-${Math.random()}`,
+                  timestamp: payload.timestamp || new Date().toISOString(),
+                  method: payload.method || "GET",
+                  url: payload.url || "https://scanme.nmap.org/",
+                  host: payload.host || "scanme.nmap.org",
+                  status: payload.status ?? 200,
+                  verdict: payload.verdict || (payload.allowed === false ? "BLOCKED_SCOPE" : "ALLOWED"),
+                  tier: payload.tier || payload.precedence_tier || "EXPLICIT_ALLOW",
+                  rate_limit: payload.rate_limit || `${rateLimitRps.toFixed(2)} req/s`,
+                  user_agent: payload.user_agent || "Mozilla/5.0 [Cloaked]",
+                  redacted_headers: payload.redacted_headers || ["Authorization: [REDACTED]"],
+                  sha256:
+                    payload.sha256 ||
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                },
+                ...prev.slice(0, 49),
+              ]);
+            }
           } catch {
             // Ignore malformed frame
           }
@@ -127,7 +169,7 @@ export default function LiveProxyStreamer({
     };
   }, [wsBaseUrl]);
 
-  // Local simulation interval so operator can observe live token-bucket & redaction behavior
+  // Local traffic simulation for live demonstration when proxy is idle
   useEffect(() => {
     if (!simulating) return;
     const timer = setInterval(() => {
@@ -141,6 +183,18 @@ export default function LiveProxyStreamer({
         },
         ...prev.slice(0, 49),
       ]);
+      setRpsSeries((prev) => [
+        ...prev.slice(1),
+        sample.verdict === "ALLOWED" ? 0.5 : 0.45,
+      ]);
+      setValkeySeries((prev) => [
+        ...prev.slice(1),
+        Number((0.7 + (simCounterRef.current % 4) * 0.1).toFixed(1)),
+      ]);
+      setSsrfSeries((prev) => [
+        ...prev.slice(1),
+        sample.verdict === "BLOCKED_SSRF" ? 1 : 0,
+      ]);
     }, 3500);
     return () => clearInterval(timer);
   }, [simulating]);
@@ -148,181 +202,198 @@ export default function LiveProxyStreamer({
   const allowedCount = events.filter((e) => e.verdict === "ALLOWED").length;
   const blockedCount = events.filter((e) => e.verdict !== "ALLOWED").length;
 
+  const filteredEvents = useMemo(() => {
+    if (verdictFilter === "ALLOWED") return events.filter((e) => e.verdict === "ALLOWED");
+    if (verdictFilter === "BLOCKED") return events.filter((e) => e.verdict !== "ALLOWED");
+    return events;
+  }, [events, verdictFilter]);
+
   return (
-    <div class="space-y-6 text-slate-100">
-      {/* Top Status & Telemetry Controls */}
-      <div class="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
-        <div class="flex items-center gap-3">
-          <div class="h-10 w-10 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold font-mono">
-            PX
+    <div class="space-y-3">
+      {/* Top 4 ds41 Sparkline & Capacity Telemetry Cards */}
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+        <div class="card card-pad flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="kpi-label">VALKEY TOKEN-BUCKET</span>
+            <span class="pill pill-cyan">ACTIVE</span>
           </div>
-          <div>
-            <h2 class="text-base font-semibold text-slate-100">
-              Monitor de Egress Proxy Governado (`127.0.0.1:8080`)
-            </h2>
-            <p class="text-xs text-slate-400">
-              Enforcement de Escopo em Tempo Real, Token-Bucket Valkey (`0.5 req/s`), Cloaking de User-Agent e Redação S3
-            </p>
+          <div class="my-1.5">
+            <div class="kpi-value">{rateLimitRps.toFixed(2)} req/s</div>
+            <div class="kpi-sub">burst: {burstCapacity} · min_interval: 2000ms</div>
           </div>
+          <SparklineSVG data={rpsSeries} color="#06b6d4" height={34} />
         </div>
 
-        <div class="flex items-center gap-3">
-          <span
-            class={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono border ${
-              wsConnected
-                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                : "bg-amber-500/15 text-amber-300 border-amber-500/30"
-            }`}
-          >
-            <span class={`h-2 w-2 rounded-full ${wsConnected ? "bg-emerald-400 animate-ping" : "bg-amber-400"}`}></span>
-            {wsConnected ? "WebSocket /ws/proxy/live Ativo" : "Stream Local (Simulador Ativo)"}
-          </span>
+        <div class="card card-pad flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="kpi-label">VALKEY P99 LATENCY</span>
+            <span class="pill pill-emerald">0.8ms</span>
+          </div>
+          <div class="my-1.5">
+            <div class="kpi-value">{valkeySeries[valkeySeries.length - 1]?.toFixed(1)} ms</div>
+            <div class="kpi-sub">token check · atomic lua eval</div>
+          </div>
+          <SparklineSVG data={valkeySeries} color="#10b981" height={34} />
+        </div>
 
-          <button
-            type="button"
-            onClick={() => setSimulating((s) => !s)}
-            class={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
-              simulating
-                ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
-                : "bg-slate-800 text-slate-400 border-slate-700"
-            }`}
-          >
-            {simulating ? "⏸ Pausar Simulação de Tráfego" : "▶ Ativar Simulação de Tráfego"}
-          </button>
+        <div class="card card-pad flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="kpi-label">SSRF &amp; SCOPE DROPS</span>
+            <span class="pill pill-red">{blockedCount} blocked</span>
+          </div>
+          <div class="my-1.5">
+            <div class="kpi-value text-[#ef4444]">{blockedCount}</div>
+            <div class="kpi-sub">RFC1918 · 169.254.169.254 · fail-closed</div>
+          </div>
+          <SparklineSVG data={ssrfSeries} color="#ef4444" height={34} />
+        </div>
+
+        <div class="card card-pad flex flex-col justify-between">
+          <div class="flex items-center justify-between">
+            <span class="kpi-label">FORENSIC TAP &amp; CLOAK</span>
+            <span class="pill pill-amber">bounty-safe-v1</span>
+          </div>
+          <div class="my-1.5">
+            <div class="kpi-value text-[#10b981]">100%</div>
+            <div class="kpi-sub">Auth/Cookie/JWT redacted · WS ticks: {heartbeatCount}</div>
+          </div>
+          <div class="bar-track mt-2">
+            <div class="bar-fill bar-fill-emerald" style={{ width: "100%" }} />
+          </div>
         </div>
       </div>
 
-      {/* 3 Telemetry Gauge Cards */}
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Card 1: Valkey Token-Bucket Rate Limiter */}
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[11px] font-mono uppercase text-cyan-400">
-              Valkey Token-Bucket Rate Limiter
-            </span>
-            <span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono text-[10px] font-bold">
-              ACTIVE
-            </span>
-          </div>
-          <div class="text-xl font-bold font-mono text-slate-100">
-            0.5 req/s <span class="text-xs font-normal text-slate-400">por host (Burst: 1)</span>
-          </div>
-          <p class="text-xs text-slate-400">
-            Intervalo mínimo garantido de <code class="text-cyan-300 font-mono">2000ms</code> entre requisições para o mesmo destino, prevenindo bloqueios de WAF e sobrecarga.
-          </p>
-        </div>
-
-        {/* Card 2: User-Agent Cloaking & Header Normalization */}
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[11px] font-mono uppercase text-emerald-400">
-              User-Agent Cloaking &amp; Stealth
-            </span>
-            <span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-mono text-[10px] font-bold">
-              ENABLED
-            </span>
-          </div>
-          <div class="text-xl font-bold font-mono text-slate-100">
-            Rotação Determinística
-          </div>
-          <p class="text-xs text-slate-400">
-            Substitui assinaturas padrão (`Nuclei`, `python-httpx`, `Go-http-client`) por perfis reais de navegador antes do envio.
-          </p>
-        </div>
-
-        {/* Card 3: Secret Redactor & Forensic Tap */}
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[11px] font-mono uppercase text-amber-400">
-              Secret Redaction (`bounty-safe-v1`)
-            </span>
-            <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-mono text-[10px] font-bold">
-              SHA-256 TAP
-            </span>
-          </div>
-          <div class="text-xl font-bold font-mono text-slate-100">
-            [REDACTED] Pre-Storage
-          </div>
-          <p class="text-xs text-slate-400">
-            Sanitiza <code class="text-amber-300 font-mono">Authorization</code>, <code class="text-amber-300 font-mono">Cookie</code>, <code class="text-amber-300 font-mono">X-Api-Key</code> e Bearer JWTs antes de gravar no SeaweedFS S3.
-          </p>
-        </div>
-      </div>
-
-      {/* Live Egress Stream Feed */}
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
-        <div class="bg-slate-950 px-4 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-          <div class="flex items-center gap-4">
-            <span class="text-slate-200 font-semibold">
-              Feed Ao Vivo de Requisições Egress &amp; Bloqueios ScopeGuard
-            </span>
-            <span class="text-emerald-400">Permitidas: {allowedCount}</span>
-            <span class="text-red-400">Bloqueadas (SSRF/Scope): {blockedCount}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setEvents([])}
-            class="text-slate-400 hover:text-slate-200 text-[11px]"
-          >
-            Limpar Feed
-          </button>
-        </div>
-
-        <div class="divide-y divide-slate-800/70 max-h-[480px] overflow-y-auto">
-          {events.map((ev) => {
-            const isAllowed = ev.verdict === "ALLOWED";
-            return (
-              <div
-                key={ev.id}
-                class={`p-3.5 text-xs font-mono transition ${
-                  isAllowed ? "hover:bg-slate-800/30" : "bg-red-950/20 hover:bg-red-950/30"
+      {/* Stream Control & Filter Bar */}
+      <div class="card overflow-hidden">
+        <div class="px-3.5 py-2.5 border-b border-[#1b2230] flex flex-wrap items-center justify-between gap-2 bg-[#070a0f]">
+          <div class="flex items-center gap-2.5">
+            <span
+              class={`pill ${wsConnected ? "pill-emerald" : "pill-amber"}`}
+            >
+              <span
+                class={`h-1.5 w-1.5 rounded-full ${
+                  wsConnected ? "bg-[#10b981] animate-pulse" : "bg-[#f59e0b]"
                 }`}
-              >
-                <div class="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                  <div class="flex items-center gap-2">
-                    <span
-                      class={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        isAllowed
-                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                          : "bg-red-500/20 text-red-300 border border-red-500/40"
-                      }`}
+              />
+              {wsConnected ? "WS /ws/proxy/live ONLINE" : "LOCAL STREAM SIMULATOR"}
+            </span>
+            <span class="text-xs font-mono text-[#e6edf3] font-semibold">
+              Egress HTTP &amp; ScopeGuard Audit Stream
+            </span>
+            <span class="text-[11px] font-mono text-[#10b981] num">
+              allow:{allowedCount}
+            </span>
+            <span class="text-[11px] font-mono text-[#ef4444] num">
+              drop:{blockedCount}
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <div class="seg">
+              {(["ALL", "ALLOWED", "BLOCKED"] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setVerdictFilter(f)}
+                  class={`seg-btn ${verdictFilter === f ? "active" : ""}`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSimulating((s) => !s)}
+              class={`btn ${simulating ? "btn-cyan" : "btn-ghost"} !py-1 !px-2.5`}
+            >
+              {simulating ? "⏸ Pause Sim" : "▶ Resume Sim"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEvents([])}
+              class="btn btn-ghost !py-1 !px-2"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        {/* High-Density Egress Traffic Table (ds41 SESSION BENCHMARKS style) */}
+        <div class="max-h-[440px] overflow-y-auto overflow-x-auto">
+          <table class="dtable num">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Verdict</th>
+                <th>Tier</th>
+                <th>Method</th>
+                <th>Target URL</th>
+                <th>HTTP</th>
+                <th>Pacing / Rate</th>
+                <th>Redacted Headers</th>
+                <th class="text-right">Sanitized SHA-256</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={9} class="text-center text-[#7d8590] py-6">
+                    No egress requests matching filter ({verdictFilter}).
+                  </td>
+                </tr>
+              ) : (
+                filteredEvents.map((ev) => {
+                  const isAllowed = ev.verdict === "ALLOWED";
+                  return (
+                    <tr
+                      key={ev.id}
+                      class={isAllowed ? "" : "bg-[#ef4444]/[0.05]"}
                     >
-                      {ev.verdict}
-                    </span>
-                    <span class="px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300 font-bold">
-                      {ev.method}
-                    </span>
-                    <span class="text-slate-100 font-semibold break-all">{ev.url}</span>
-                  </div>
-
-                  <div class="flex items-center gap-3 text-[11px]">
-                    <span class="text-amber-300">Tier: {ev.tier}</span>
-                    <span class="text-slate-400">HTTP {ev.status}</span>
-                    <span class="text-slate-500">{ev.timestamp?.split("T")[1]?.slice(0, 8)}</span>
-                  </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px] text-slate-400 bg-slate-950/70 p-2 rounded border border-slate-800/80">
-                  <div>
-                    <span class="text-slate-500">Rate Limit: </span>
-                    <span class="text-cyan-300">{ev.rate_limit}</span>
-                  </div>
-                  <div class="truncate">
-                    <span class="text-slate-500">UA Cloaking: </span>
-                    <span class="text-slate-300">{ev.user_agent}</span>
-                  </div>
-                  <div class="truncate">
-                    <span class="text-slate-500">Redacted: </span>
-                    <span class="text-amber-300">
-                      {ev.redacted_headers?.length
-                        ? ev.redacted_headers.join(", ")
-                        : "Nenhum segredo presente"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+                      <td class="text-[#7d8590]">
+                        {ev.timestamp?.split("T")[1]?.slice(0, 8)}
+                      </td>
+                      <td>
+                        <span class={`pill ${isAllowed ? "pill-emerald" : "pill-red"}`}>
+                          {ev.verdict}
+                        </span>
+                      </td>
+                      <td class="text-[#f59e0b] text-[10px]">{ev.tier}</td>
+                      <td>
+                        <span class="pill pill-cyan">{ev.method}</span>
+                      </td>
+                      <td
+                        class="text-[#e6edf3] font-semibold max-w-[260px] truncate"
+                        title={ev.url}
+                      >
+                        {ev.url}
+                      </td>
+                      <td
+                        class={
+                          ev.status >= 400 ? "text-[#ef4444]" : "text-[#10b981]"
+                        }
+                      >
+                        {ev.status}
+                      </td>
+                      <td class="text-[#06b6d4] text-[11px]">{ev.rate_limit}</td>
+                      <td class="text-[#f59e0b] text-[10px] max-w-[180px] truncate">
+                        {ev.redacted_headers?.length
+                          ? ev.redacted_headers.join(", ")
+                          : "—"}
+                      </td>
+                      <td
+                        class="text-right text-[#7d8590] text-[10px]"
+                        title={ev.sha256}
+                      >
+                        {String(ev.sha256 || "").slice(0, 14)}…
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

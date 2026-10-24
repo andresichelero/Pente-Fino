@@ -47,6 +47,8 @@ logs/
 *.tmp
 *.bak
 *.swp
+*.har
+*.json.gz
 
 # Node / Astro Frontend (Phase 5)
 node_modules/

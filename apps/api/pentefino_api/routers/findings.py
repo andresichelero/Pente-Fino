@@ -313,11 +313,13 @@ During authorized, non-intrusive security testing under program **`{detail.progr
 ---
 
 ## 2. Step-by-Step Reproducible PoC (Sanitized)
-All active requests were executed using strictly `safe_read_only` verification templates at <= 0.5 req/sec with credential redaction enabled (`bounty-safe-v1`).
+All active requests were executed using strictly `{impact_class}` verification templates (`{detail.detector_id}`) at <= 0.5 req/sec with credential redaction enabled (`bounty-safe-v1`).
 
 ```bash
 curl -i -s -k -X GET "{target_url}/" \\
   -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \\
+  -H "X-PenteFino-Detector: {detail.detector_id}" \\
+  -H "X-PenteFino-Dedup-SHA256: {detail.dedup_key[:16]}" \\
   -H "Accept: */*" \\
   -H "Authorization: [REDACTED_BY_PENTEFINO_SAFE_V1]"
 ```

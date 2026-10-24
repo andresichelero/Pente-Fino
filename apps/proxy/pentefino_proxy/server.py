@@ -402,10 +402,11 @@ class ForwardProxyServer:
             sleep=True,
         )
 
-        # 3. Establish upstream connection
+        # 3. Establish upstream connection using pinned IP (anti-TOCTOU DNS rebinding)
+        connect_host = decision.resolved_ip or target_host
         try:
             upstream_reader, upstream_writer = await asyncio.open_connection(
-                target_host,
+                connect_host,
                 target_port,
             )
         except Exception as e:

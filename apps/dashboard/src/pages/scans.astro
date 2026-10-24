@@ -21,76 +21,37 @@ const [assets, scanHistory] = await Promise.all([
   fetchScanHistory(),
 ]);
 
-const cdnProviders = ["cloudflare", "akamai", "fastly", "incapsula", "sucuri", "cloudfront"];
+const cdnProviders = ["cloudflare", "akamai", "fastly", "incapsula", "sucuri", "cloudfront", "imperva", "ddos-guard"];
 ---
 
 <BaseLayout
-  title="Detection Planner & Execução de Scans"
-  subtitle="Poda Inteligente de Templates por CDN/WAF, Isolamento em Containers Efêmeros & Streaming WebSocket"
+  title="DetectionPlanner & Scan Runner"
+  subtitle="Poda Inteligente de Templates por Borda CDN/WAF, Containers Efêmeros Isolados & Telemetria WebSocket"
   activeNav="scans"
 >
-  <!-- Edge CDN/WAF Tag Pruning & Ephemeral Container Architecture Header -->
-  <section class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- Edge CDN/WAF Pruning Card -->
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-5 space-y-3">
-      <div class="flex items-center justify-between">
-        <span class="text-[11px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/15 text-accent-amber border border-amber-500/30 font-semibold">
-          DETECTION PLANNER • CDN PRUNING
-        </span>
-        <span class="text-xs font-mono text-slate-400">Anti-False-Positive & Rate Saver</span>
-      </div>
-      <h2 class="text-sm font-bold text-white font-mono">
-        Poda Automática de Checks de Infraestrutura Origin Atrás de Edge CDN/WAF
-      </h2>
-      <p class="text-xs text-slate-300 leading-relaxed">
-        Quando o probe <code class="text-cyan-300">httpx</code> identifica que um ativo está protegido por borda
-        CDN/WAF, o <code class="text-emerald-300">DetectionPlanner</code> poda automaticamente templates de
-        infraestrutura/rede de origem (portas TCP baixas, banners de roteadores, checks de IP direto) e preserva
-        apenas templates relevantes ao stack de aplicação HTTP detectado.
-      </p>
-      <div class="flex items-center gap-2 flex-wrap pt-1">
-        {
-          cdnProviders.map((cdn) => (
-            <span class="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-300">
-              edge:{cdn}
-            </span>
-          ))
-        }
-      </div>
+  <!-- Compact 1-Line Planner & Sandbox Guardrail Strip -->
+  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-2 flex-wrap font-mono text-xs">
+      <span class="w-2 h-2 rounded-full bg-[#fbbf24]"></span>
+      <span class="font-semibold text-white">Edge CDN/WAF Pruning</span>
+      <details class="hint">
+        <summary>?</summary>
+        <div>
+          O DetectionPlanner usa defer(TemplateCatalog.raw_yaml) e poda tags genéricas de borda CDN/WAF antes de despachar o container efêmero (--read-only, --cap-drop=ALL, pids_limit=128).
+        </div>
+      </details>
+      <span class="text-[#263042]">·</span>
+      {
+        cdnProviders.map((cdn) => (
+          <span class="pill text-[#fbbf24]">-{cdn}</span>
+        ))
+      }
     </div>
 
-    <!-- Ephemeral Container Isolation Card -->
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-5 space-y-3">
-      <div class="flex items-center justify-between">
-        <span class="text-[11px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-accent-emerald border border-emerald-500/30 font-semibold">
-          DOCKER RUNNER • HARDENED SANDBOX
-        </span>
-        <span class="text-xs font-mono text-slate-400">Zero Direct Egress</span>
-      </div>
-      <h2 class="text-sm font-bold text-white font-mono">
-        Containers Efêmeros sem Capacidades Linux e Roteamento Forçado pelo Proxy
-      </h2>
-      <p class="text-xs text-slate-300 leading-relaxed">
-        Todos os adaptadores (<code class="text-cyan-300">subfinder</code>, <code class="text-cyan-300">dnsx</code>,{" "}
-        <code class="text-cyan-300">httpx</code>, <code class="text-cyan-300">nuclei</code>) executam com{" "}
-        <code class="text-emerald-300">--cap-drop=ALL</code>, <code class="text-emerald-300">--security-opt=no-new-privileges</code>,{" "}
-        rootfs somente-leitura, <code class="text-emerald-300">pids_limit=256</code> e{" "}
-        <code class="text-amber-300">HTTP_PROXY=http://pentefino_proxy:8080</code>.
-      </p>
-      <div class="flex items-center gap-2 flex-wrap pt-1 font-mono text-[10px]">
-        <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-emerald-300">
-          --cap-drop=ALL
-        </span>
-        <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-emerald-300">
-          read_only=true
-        </span>
-        <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300">
-          -disable-update-check
-        </span>
-        <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-amber-300">
-          -interactsh-disable
-        </span>
-      </div>
+    <div class="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
+      <span class="pill text-[#34d399]">--cap-drop=ALL</span>
+      <span class="pill text-[#34d399]">--read-only</span>
+      <span class="pill text-[#22d3ee]">defer(raw_yaml) &lt;15ms</span>
     </div>
   </section>
 

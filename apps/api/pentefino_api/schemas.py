@@ -136,6 +136,7 @@ class TemplateSummaryItem(BaseModel):
     id: str
     name: str
     protocol: str
+    http_methods: list[str] | None = None
     impact_class: str
     severity: str | None = None
     cve_id: str | None = None
@@ -144,10 +145,15 @@ class TemplateSummaryItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     upstream_revision: str
     bundle_hash: str
+    raw_yaml: str | None = None
+    updated_at: str | None = None
 
 
 class TemplateListResponse(BaseModel):
     total: int
+    page: int = 1
+    page_size: int = 25
+    total_pages: int = 1
     items: list[TemplateSummaryItem] = Field(default_factory=list)
 
 
@@ -201,6 +207,7 @@ class ScanPlanResponse(BaseModel):
 class ScanRunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    plan_id: str | None = None
     program_slug: str
     asset_key: str
     severity: str | None = None

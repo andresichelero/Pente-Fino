@@ -78,6 +78,14 @@ def run_scan(
                     "error": f"Asset '{clean_asset}' not found in program '{program}'. Run discovery first."
                 }
 
+            if target_asset.scope_state not in ("in_scope_explicit", "in_scope_derived"):
+                return {
+                    "error": (
+                        f"Hard-Gate Fail-Closed: Asset '{target_asset.canonical_key}' has scope_state="
+                        f"'{target_asset.scope_state}' and cannot be actively scanned."
+                    )
+                }
+
             if async_mode:
                 run_id = uuid.uuid4()
                 await record_audit_event(

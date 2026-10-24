@@ -11,8 +11,9 @@ from typing import Sequence
 import uuid
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from pentefino_domain.enums import ImpactClass
 from pentefino_domain.models.asset import Asset
@@ -37,7 +38,6 @@ GENERIC_BASELINE_TAGS: set[str] = {
     "ssl",
     "tls",
     "headers",
-    "default-login",
     "config",
     "disclosure",
 }
@@ -140,17 +140,21 @@ class DetectionPlanner:
         ]
 
         # 3. Retrieve Candidate Templates
+        allowed_classes = self._get_allowed_impact_classes(max_impact_class)
         if templates is not None:
             candidates = list(templates)
         elif self.db_session is not None:
-            stmt = select(TemplateCatalog)
+            stmt = (
+                select(TemplateCatalog)
+                .options(defer(TemplateCatalog.raw_yaml))
+                .where(func.lower(TemplateCatalog.impact_class).in_(allowed_classes))
+            )
             result = await self.db_session.execute(stmt)
             candidates = list(result.scalars().all())
         else:
             candidates = []
 
         # 4. Tier 1: Impact Hard-Gate Filter
-        allowed_classes = self._get_allowed_impact_classes(max_impact_class)
         tier1_templates: list[TemplateCatalog] = []
         for t in candidates:
             impact = (t.impact_class or "").lower()
@@ -238,7 +242,8 @@ class DetectionPlanner:
             if t.id not in seen_ids:
                 seen_ids.add(t.id)
                 selected_ids.append(t.id)
-                path_suffix = t.id if t.id.endswith((".yaml", ".yml")) else f"{t.id}.yaml"
+                raw_rel = getattr(t, "file_path", None) or t.id
+                path_suffix = raw_rel if raw_rel.endswith((".yaml", ".yml")) else f"{raw_rel}.yaml"
                 if not path_suffix.startswith("/"):
                     container_path = f"{self.templates_container_dir}/{path_suffix}"
                 else:

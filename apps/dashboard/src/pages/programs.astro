@@ -9,98 +9,34 @@ const activeSlug =
   querySlug && programs.some((p) => p.slug === querySlug)
     ? querySlug
     : programs[0]?.slug || "";
-
-const precedenceTiers = [
-  {
-    tier: "Tier 1",
-    name: "Validates Program & Policy",
-    desc: "Programa deve estar ACTIVE com AuthorizationSnapshot válido; senão, OUT_OF_SCOPE imediato.",
-    badge: "GATEWAY",
-    color: "text-emerald-400 border-emerald-500/30 bg-emerald-950/20",
-  },
-  {
-    tier: "Tier 2",
-    name: "SSRF / Private IP Guard",
-    desc: "Bloqueia RFC1918, Loopback, Link-Local (169.254.169.254), CGNAT, Multicast e IPv6 equivalentes.",
-    badge: "HARD DENY",
-    color: "text-red-400 border-red-500/30 bg-red-950/20",
-  },
-  {
-    tier: "Tier 3",
-    name: "Explicit DENY Rules",
-    desc: "Qualquer regra DENY correspondente (domínio, wildcard, URL, CIDR ou IP) vence qualquer ALLOW.",
-    badge: "DENY WINS",
-    color: "text-red-400 border-red-500/30 bg-red-950/20",
-  },
-  {
-    tier: "Tier 4",
-    name: "Denied Paths & Port Restrictions",
-    desc: "Valida path prefix proibido (ex: /admin, /logout) e portas permitidas na regra.",
-    badge: "CONSTRAINT",
-    color: "text-amber-400 border-amber-500/30 bg-amber-950/20",
-  },
-  {
-    tier: "Tier 5",
-    name: "Explicit Exact ALLOW",
-    desc: "Match exato de domínio/hostname/IP/URL produz estado IN_SCOPE_EXPLICIT.",
-    badge: "EXPLICIT",
-    color: "text-emerald-400 border-emerald-500/30 bg-emerald-950/20",
-  },
-  {
-    tier: "Tier 6",
-    name: "Wildcard / CIDR Derived ALLOW",
-    desc: "Match de *.domain.tld (excluindo o apex salvo se houver regra separada) produz IN_SCOPE_DERIVED.",
-    badge: "DERIVED",
-    color: "text-cyan-400 border-cyan-500/30 bg-cyan-950/20",
-  },
-  {
-    tier: "Tier 7",
-    name: "Fail-Closed Default",
-    desc: "Nenhuma regra aplicável: rejeitado deterministicamente como OUT_OF_SCOPE.",
-    badge: "FAIL-CLOSED",
-    color: "text-slate-300 border-slate-700 bg-slate-900",
-  },
-];
 ---
 
 <BaseLayout
-  title="Programas & Governança de Escopo (7-Tier Engine)"
-  subtitle="Normalização IDNA2008/UTS46, Prevenção Anti-SSRF e Simulador Interativo de Regras de Escopo"
+  title="Programs & 7-Tier Scope Governance"
+  subtitle="Normalização IDNA2008/UTS46, Guarda Anti-SSRF e Simulador Interativo de Precedência em 7 Camadas"
   activeNav="programs"
 >
-  <!-- 7-Tier Scope Precedence Banner -->
-  <section class="bg-bg-panel border border-border-grid rounded-xl p-6 space-y-4">
-    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border-grid pb-3">
-      <div>
-        <h2 class="text-sm font-bold uppercase tracking-wider text-white font-mono flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full bg-accent-emerald"></span>
-          Matriz Determinística de Precedência em 7 Camadas (Fail-Closed Scope Engine)
-        </h2>
-        <p class="text-xs text-slate-400 mt-0.5">
-          Nenhuma requisição sai da plataforma sem validação síncrona contra esta cadeia de avaliação.
-        </p>
-      </div>
-      <span class="text-xs font-mono px-2.5 py-1 rounded bg-emerald-950/40 text-accent-emerald border border-accent-emerald/30">
-        IDNA2008 / UTS46 CANONICALIZATION
-      </span>
+  <!-- Compact 1-Line 7-Tier Precedence Strip with Popover -->
+  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-2.5 flex-wrap font-mono text-xs">
+      <span class="w-2 h-2 rounded-full bg-[#34d399]"></span>
+      <span class="font-semibold text-white">7-Tier Precedence Pipeline</span>
+      <details class="hint">
+        <summary>?</summary>
+        <div>
+          1. Program/Snapshot Active → 2. SSRF/Private IP Guard → 3. Explicit DENY → 4. Denied Paths/Ports → 5. Explicit ALLOW → 6. Wildcard/CIDR Derived → 7. Fail-Closed Default DENY.
+        </div>
+      </details>
+      <span class="text-[#263042]">·</span>
+      <span class="pill text-[#34d399]">T1 Snapshot</span>
+      <span class="pill text-[#f87171]">T2 SSRF Guard</span>
+      <span class="pill text-[#f87171]">T3 Explicit DENY</span>
+      <span class="pill text-[#fbbf24]">T4 Path/Port</span>
+      <span class="pill text-[#34d399]">T5 Exact ALLOW</span>
+      <span class="pill text-[#22d3ee]">T6 Wildcard</span>
+      <span class="pill">T7 Default DENY</span>
     </div>
-
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
-      {
-        precedenceTiers.map((t) => (
-          <div class:list={["rounded-lg border p-3 flex flex-col justify-between", t.color]}>
-            <div>
-              <div class="flex items-center justify-between text-[10px] font-mono uppercase mb-1">
-                <span class="font-bold">{t.tier}</span>
-                <span class="px-1.5 py-0.5 rounded bg-black/30">{t.badge}</span>
-              </div>
-              <div class="text-xs font-bold text-white leading-snug">{t.name}</div>
-            </div>
-            <p class="text-[11px] text-slate-300/90 mt-2 leading-relaxed">{t.desc}</p>
-          </div>
-        ))
-      }
-    </div>
+    <span class="pill text-[#34d399]">IDNA2008 / UTS46</span>
   </section>
 
   <!-- Interactive Island: ScopeLiveTester -->

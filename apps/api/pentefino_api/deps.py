@@ -10,11 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pentefino_domain.models.audit import AuditEvent
 from pentefino_domain.models.program import Program
-from pentefino_domain.session import get_async_session
+from pentefino_domain.session import check_db_available, get_async_session
+
+
+class DatabaseStandbyError(Exception):
+    """Raised before dependency yield when PostgreSQL is in standby/offline mode."""
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding an async database session."""
+    """FastAPI dependency yielding an async database session with fast-fail standby circuit breaker."""
+    if not await check_db_available():
+        raise DatabaseStandbyError("PostgreSQL is in standby/offline mode.")
     async with get_async_session() as session:
         yield session
 

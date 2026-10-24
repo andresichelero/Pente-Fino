@@ -1,0 +1,44 @@
+[project]
+name = "pentefino-workspace"
+version = "0.5.0"
+description = "PenteFino Governed Bug Bounty & SecOps Platform Monorepo Workspace"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+    "packages/domain",
+    "packages/scope",
+    "packages/runner",
+    "packages/template_indexer",
+    "packages/adapters",
+    "packages/detection",
+    "packages/intel",
+    "packages/notifications",
+    "apps/api",
+    "apps/cli",
+    "apps/proxy",
+    "apps/worker",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "tests",
+    "apps/cli/tests",
+    "apps/api/tests",
+]
+pythonpath = [
+    ".",
+    "packages/domain",
+    "packages/scope",
+    "packages/runner",
+    "packages/template_indexer",
+    "packages/adapters",
+    "packages/detection",
+    "packages/intel",
+    "packages/notifications",
+    "apps/api",
+    "apps/cli",
+    "apps/proxy",
+    "apps/worker",
+]

@@ -7,13 +7,13 @@ export interface ScopeLiveTesterProps {
 }
 
 const PRECEDENCE_TIERS = [
-  { id: "EXPLICIT_DENY", rank: 1, label: "1. EXPLICIT_DENY (Bloqueio Explícito / Anti-SSRF)", desc: "IPs privados RFC1918, Loopback, Metadata 169.254.169.254 ou regra DENY explícita" },
-  { id: "EXPIRED_AUTH", rank: 2, label: "2. EXPIRED_AUTH (Janela Expirada)", desc: "Snapshot de autorização expirado ou programa suspenso" },
-  { id: "PATH_PORT_DENY", rank: 3, label: "3. PATH_PORT_DENY (Porta/Caminho Proibido)", desc: "Porta fora de allowed_ports ou caminho em denied_paths (ex: /logout, /admin)" },
-  { id: "EXPLICIT_ALLOW", rank: 4, label: "4. EXPLICIT_ALLOW (Escopo Explícito)", desc: "Correspondência exata com regra ALLOW de domínio, host ou URL" },
-  { id: "WILDCARD_ALLOW", rank: 5, label: "5. WILDCARD_ALLOW (Subdomínio Derivado)", desc: "Correspondência por wildcard (*.alvo.com) com estado in_scope_derived" },
-  { id: "DERIVED_CANDIDATE", rank: 6, label: "6. DERIVED_CANDIDATE (Apenas Descoberta Passiva)", desc: "Regra discover_only — bloqueado para scan ativo" },
-  { id: "UNKNOWN_DENY", rank: 7, label: "7. UNKNOWN_DENY (Fail-Closed Default)", desc: "Nenhuma regra correspondente — negado por padrão (Fail-Closed)" },
+  { id: "EXPLICIT_DENY", rank: 1, label: "T1 · EXPLICIT_DENY / SSRF GUARD", desc: "RFC1918, Loopback, Link-Local 169.254.169.254 ou regra DENY explícita" },
+  { id: "EXPIRED_AUTH", rank: 2, label: "T2 · EXPIRED_AUTH / SNAPSHOT GATE", desc: "AuthorizationSnapshot expirado ou programa inativo" },
+  { id: "PATH_PORT_DENY", rank: 3, label: "T3 · PATH_PORT_DENY", desc: "Porta fora de allowed_ports ou caminho em denied_paths (/admin, /logout)" },
+  { id: "EXPLICIT_ALLOW", rank: 4, label: "T4 · EXPLICIT_ALLOW", desc: "Correspondência exata com regra ALLOW (in_scope_explicit)" },
+  { id: "WILDCARD_ALLOW", rank: 5, label: "T5 · WILDCARD_ALLOW", desc: "Subdomínio derivado de *.alvo.com (in_scope_derived)" },
+  { id: "DERIVED_CANDIDATE", rank: 6, label: "T6 · DERIVED_CANDIDATE", desc: "Regra discover_only — restrito a reconhecimento passivo" },
+  { id: "UNKNOWN_DENY", rank: 7, label: "T7 · UNKNOWN_DENY (FAIL-CLOSED)", desc: "Nenhuma regra aplicável — bloqueado por padrão" },
 ];
 
 export default function ScopeLiveTester({
@@ -28,8 +28,10 @@ export default function ScopeLiveTester({
   const [rules, setRules] = useState<any[]>([]);
   const [loadingRules, setLoadingRules] = useState<boolean>(false);
 
-  // New Program Modal
+  // Drawers / Modals on demand
   const [showNewProgramModal, setShowNewProgramModal] = useState<boolean>(false);
+  const [showNewRuleDrawer, setShowNewRuleDrawer] = useState<boolean>(false);
+
   const [newProgSlug, setNewProgSlug] = useState<string>("");
   const [newProgName, setNewProgName] = useState<string>("");
   const [newProgPlatform, setNewProgPlatform] = useState<string>("hackerone");
@@ -54,12 +56,19 @@ export default function ScopeLiveTester({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchPrograms();
+    if (!initialPrograms || initialPrograms.length === 0) {
+      fetchPrograms();
+    }
   }, []);
 
   useEffect(() => {
     if (selectedSlug) {
-      fetchScopeRules(selectedSlug);
+      // Clear stale verdict & messages when switching program
+      setVerdict(null);
+      setStatusMessage(null);
+      if (selectedSlug !== initialSlug || !initialRules || initialRules.length === 0) {
+        fetchScopeRules(selectedSlug);
+      }
     }
   }, [selectedSlug]);
 
@@ -77,7 +86,7 @@ export default function ScopeLiveTester({
         }
       }
     } catch {
-      // Fallback if API is offline during SSR/CSR preview
+      // Offline fallback
     }
   }
 
@@ -90,7 +99,7 @@ export default function ScopeLiveTester({
         setRules(Array.isArray(data) ? data : data.rules || []);
       }
     } catch {
-      // Keep current rules if offline
+      // Offline fallback
     } finally {
       setLoadingRules(false);
     }
@@ -120,13 +129,13 @@ export default function ScopeLiveTester({
         setShowNewProgramModal(false);
         setNewProgSlug("");
         setNewProgName("");
-        setStatusMessage(`Programa '${nextSlug}' criado com sucesso.`);
+        setStatusMessage(`Programa '${nextSlug}' criado.`);
       } else {
         const err = await res.json().catch(() => ({}));
-        setStatusMessage(`Erro ao criar programa: ${err.detail || res.statusText}`);
+        setStatusMessage(`Erro: ${err.detail || res.statusText}`);
       }
     } catch (err: any) {
-      setStatusMessage(`Falha de conexão com a API: ${err?.message || "Erro"}`);
+      setStatusMessage(`Falha de conexão: ${err?.message || "Offline"}`);
     } finally {
       setCreatingProgram(false);
     }
@@ -163,13 +172,14 @@ export default function ScopeLiveTester({
       });
       if (res.ok) {
         await fetchScopeRules(selectedSlug);
+        setShowNewRuleDrawer(false);
         setStatusMessage(`Regra '${rulePattern.trim()}' (${ruleAction.toUpperCase()}) adicionada.`);
       } else {
         const err = await res.json().catch(() => ({}));
-        setStatusMessage(`Erro ao adicionar regra: ${err.detail || res.statusText}`);
+        setStatusMessage(`Erro: ${err.detail || res.statusText}`);
       }
     } catch (err: any) {
-      setStatusMessage(`Erro de rede ao adicionar regra: ${err?.message || "Offline"}`);
+      setStatusMessage(`Erro de rede: ${err?.message || "Offline"}`);
     } finally {
       setAddingRule(false);
     }
@@ -183,7 +193,7 @@ export default function ScopeLiveTester({
       });
       if (res.ok) {
         setRules((prev) => prev.filter((r) => String(r.id) !== String(ruleId)));
-        setStatusMessage("Regra removida do escopo.");
+        setStatusMessage("Regra removida.");
       }
     } catch {
       setRules((prev) => prev.filter((r) => String(r.id) !== String(ruleId)));
@@ -219,13 +229,13 @@ export default function ScopeLiveTester({
       if (res.ok) {
         const data = await res.json();
         setVerdict(data);
+        setEvaluating(false);
         return;
       }
     } catch {
-      // Fallback local deterministic simulation if API offline
+      // Offline deterministic fallback
     }
 
-    // Deterministic client fallback matching ScopeEngine 7-tier logic
     const lower = tgt.toLowerCase();
     if (
       lower.includes("169.254.169.254") ||
@@ -238,8 +248,9 @@ export default function ScopeLiveTester({
         allowed: false,
         scope_state: "out_of_scope",
         precedence_tier: "EXPLICIT_DENY",
-        matched_pattern: "RFC1918/Loopback/Link-Local SSRF Guard",
-        reason: "SSRF Hard-Block: Private, Loopback, or Cloud Metadata IP range (169.254.169.254) is strictly forbidden.",
+        matched_pattern: "RFC1918 / Loopback / Cloud Metadata SSRF Guard",
+        reason: "SSRF Hard-Block: Private, Loopback, or IMDSv2 (169.254.169.254) IP range forbidden.",
+        resolved_ip: lower.includes("169.254.169.254") ? "169.254.169.254" : "127.0.0.1",
         target_canonical: tgt,
       });
     } else if (lower.includes("scanme.nmap.org") && !lower.includes("admin.scanme.nmap.org")) {
@@ -249,7 +260,8 @@ export default function ScopeLiveTester({
         precedence_tier: "EXPLICIT_ALLOW",
         matched_pattern: "scanme.nmap.org",
         reason: "Matched explicit allow rule for scanme.nmap.org on allowed port.",
-        target_canonical: tgt,
+        resolved_ip: "45.33.32.156",
+        target_canonical: tgt.startsWith("http") ? tgt : `https://${tgt}/`,
       });
     } else if (lower.includes("admin.")) {
       setVerdict({
@@ -258,6 +270,7 @@ export default function ScopeLiveTester({
         precedence_tier: "EXPLICIT_DENY",
         matched_pattern: "admin.*",
         reason: "Matched explicit deny rule for administrative subdomain.",
+        resolved_ip: null,
         target_canonical: tgt,
       });
     } else {
@@ -267,6 +280,7 @@ export default function ScopeLiveTester({
         precedence_tier: "UNKNOWN_DENY",
         matched_pattern: null,
         reason: "Target did not match any explicit or wildcard allow rule (Fail-Closed default).",
+        resolved_ip: null,
         target_canonical: tgt,
       });
     }
@@ -277,37 +291,21 @@ export default function ScopeLiveTester({
     setTargetInput(presetTarget);
     setPortInput(presetPort);
     setPathInput(presetPath);
-    runEvaluate(presetTarget, presetPort, presetPath).finally(() => setEvaluating(false));
+    runEvaluate(presetTarget, presetPort, presetPath);
   }
 
   const matchedTierId = verdict?.precedence_tier || verdict?.matched_tier || "";
 
   return (
-    <div class="space-y-6 text-slate-100">
-      {/* Top Bar: Program Selector & New Program Modal Button */}
-      <div class="flex flex-wrap items-center justify-between gap-4 bg-slate-900/90 border border-slate-800 rounded-xl p-4 shadow-lg">
-        <div class="flex items-center gap-3">
-          <div class="h-10 w-10 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold">
-            S7
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-slate-100">
-              Governança de Escopo & Simulador 7 Camadas
-            </h2>
-            <p class="text-xs text-slate-400">
-              Motor determinístico Fail-Closed (`ScopeEngine`) + Proteção Anti-SSRF RFC1918/Metadata
-            </p>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-3">
-          <label class="text-xs font-mono uppercase tracking-wider text-slate-400">
-            Programa Ativo:
-          </label>
+    <div class="space-y-4">
+      {/* Compact Control Strip */}
+      <div class="card card-pad flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="card-title">ACTIVE PROGRAM</span>
           <select
             value={selectedSlug}
             onChange={(e) => setSelectedSlug((e.target as HTMLSelectElement).value)}
-            class="bg-slate-950 border border-slate-700 text-slate-100 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-emerald-500 font-mono"
+            class="input !w-auto min-w-[220px]"
           >
             {programs.length === 0 ? (
               <option value={selectedSlug || "nmap-scanme"}>
@@ -321,11 +319,21 @@ export default function ScopeLiveTester({
               ))
             )}
           </select>
+          <span class="pill text-[#34d399] num">{rules.length} rules</span>
+        </div>
 
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowNewRuleDrawer((v) => !v)}
+            class="btn"
+          >
+            {showNewRuleDrawer ? "✕ Fechar Regra" : "+ Nova Regra"}
+          </button>
           <button
             type="button"
             onClick={() => setShowNewProgramModal(true)}
-            class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-semibold text-xs px-3.5 py-2 rounded-lg transition shadow-sm"
+            class="btn btn-primary"
           >
             + Novo Programa
           </button>
@@ -333,414 +341,361 @@ export default function ScopeLiveTester({
       </div>
 
       {statusMessage && (
-        <div class="bg-slate-900 border border-cyan-500/40 text-cyan-300 text-xs px-4 py-2.5 rounded-lg flex items-center justify-between">
+        <div class="card px-4 py-2 border-[#22d3ee]/40 text-[#22d3ee] text-xs font-mono flex items-center justify-between">
           <span>{statusMessage}</span>
-          <button
-            type="button"
-            onClick={() => setStatusMessage(null)}
-            class="text-slate-400 hover:text-slate-200 font-mono"
-          >
+          <button type="button" onClick={() => setStatusMessage(null)} class="text-[#8b98a9] hover:text-white">
             [x]
           </button>
         </div>
       )}
 
-      {/* Main Two-Column Grid: Left = Scope Rules Table + Form | Right = Live 7-Layer Simulator */}
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Scope Rules & Rule Creator (7 cols) */}
-        <div class="lg:col-span-7 space-y-6">
-          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-            <div class="flex items-center justify-between mb-4">
-              <div>
-                <h3 class="text-sm font-semibold text-slate-100 uppercase tracking-wider font-mono">
-                  Regras de Escopo ({rules.length})
-                </h3>
-                <p class="text-xs text-slate-400">
-                  Regras cadastradas para <span class="text-emerald-400 font-mono">{selectedSlug}</span>
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => fetchScopeRules(selectedSlug)}
-                class="text-xs text-slate-400 hover:text-emerald-400 border border-slate-800 hover:border-slate-700 px-2.5 py-1 rounded"
+      {/* Collapsible On-Demand New Rule Drawer */}
+      {showNewRuleDrawer && (
+        <form onSubmit={handleAddRule} class="card card-pad space-y-3 border-[#22d3ee]/40">
+          <div class="flex items-center justify-between border-b border-[#1b2230] pb-2">
+            <span class="card-title text-[#22d3ee]">+ ADD SCOPE RULE TO {selectedSlug}</span>
+            <button type="button" onClick={() => setShowNewRuleDrawer(false)} class="text-xs font-mono text-[#8b98a9]">
+              [ESC]
+            </button>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-6 gap-3 items-end">
+            <div>
+              <label class="field-label">Action</label>
+              <select
+                value={ruleAction}
+                onChange={(e) => setRuleAction((e.target as HTMLSelectElement).value)}
+                class="input"
               >
-                Atualizar
-              </button>
+                <option value="allow">allow</option>
+                <option value="deny">deny</option>
+                <option value="discover_only">discover_only</option>
+              </select>
             </div>
+            <div>
+              <label class="field-label">Asset Type</label>
+              <select
+                value={ruleAssetType}
+                onChange={(e) => setRuleAssetType((e.target as HTMLSelectElement).value)}
+                class="input"
+              >
+                <option value="domain">domain</option>
+                <option value="wildcard_domain">wildcard_domain</option>
+                <option value="hostname">hostname</option>
+                <option value="url">url</option>
+                <option value="cidr">cidr</option>
+                <option value="ip">ip</option>
+              </select>
+            </div>
+            <div class="sm:col-span-2">
+              <label class="field-label">Pattern</label>
+              <input
+                type="text"
+                value={rulePattern}
+                onInput={(e) => setRulePattern((e.target as HTMLInputElement).value)}
+                placeholder="*.scanme.nmap.org"
+                class="input"
+                required
+              />
+            </div>
+            <div>
+              <label class="field-label">Allowed Ports</label>
+              <input
+                type="text"
+                value={rulePorts}
+                onInput={(e) => setRulePorts((e.target as HTMLInputElement).value)}
+                placeholder="80, 443"
+                class="input"
+              />
+            </div>
+            <div>
+              <label class="field-label">Denied Paths</label>
+              <input
+                type="text"
+                value={ruleDeniedPaths}
+                onInput={(e) => setRuleDeniedPaths((e.target as HTMLInputElement).value)}
+                placeholder="/admin, /logout"
+                class="input"
+              />
+            </div>
+          </div>
+          <div class="flex items-center justify-between pt-1">
+            <div class="flex items-center gap-2 text-xs font-mono text-[#738196]">
+              <span>Priority:</span>
+              <input
+                type="number"
+                value={rulePriority}
+                onInput={(e) => setRulePriority(Number((e.target as HTMLInputElement).value))}
+                class="input !w-20"
+              />
+            </div>
+            <button type="submit" disabled={addingRule} class="btn btn-primary">
+              {addingRule ? "Salvando..." : "Salvar Regra"}
+            </button>
+          </div>
+        </form>
+      )}
 
-            <div class="overflow-x-auto border border-slate-800/80 rounded-lg">
-              <table class="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr class="bg-slate-950/90 text-slate-400 font-mono uppercase border-b border-slate-800">
-                    <th class="py-2.5 px-3">Ação</th>
-                    <th class="py-2.5 px-3">Tipo</th>
-                    <th class="py-2.5 px-3">Padrão (Pattern)</th>
-                    <th class="py-2.5 px-3">Prioridade</th>
-                    <th class="py-2.5 px-3">Restrições</th>
-                    <th class="py-2.5 px-3 text-right">Ações</th>
+      {/* Main Split Grid: Left 7 Cols Rules Table | Right 5 Cols Live 7-Layer Simulator */}
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div class="lg:col-span-7 card overflow-hidden">
+          <div class="px-4 py-3 border-b border-[#1b2230] flex items-center justify-between">
+            <span class="card-title">SCOPE RULES MATRIX · {selectedSlug}</span>
+            <button
+              type="button"
+              onClick={() => fetchScopeRules(selectedSlug)}
+              class="btn btn-ghost !min-h-[24px] !px-2 text-[11px] font-mono"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="dtable num">
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Type</th>
+                  <th>Pattern</th>
+                  <th class="r">Prio</th>
+                  <th>Constraints</th>
+                  <th class="r">Del</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loadingRules ? (
+                  <tr>
+                    <td colSpan={6} class="py-6 text-center text-[#738196]">
+                      Loading rules...
+                    </td>
                   </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-800/60">
-                  {loadingRules ? (
-                    <tr>
-                      <td colSpan={6} class="py-6 text-center text-slate-500 font-mono">
-                        Carregando regras de escopo...
+                ) : rules.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} class="py-6 text-center text-[#738196]">
+                      No explicit rules — operating in Fail-Closed default (UNKNOWN_DENY).
+                    </td>
+                  </tr>
+                ) : (
+                  rules.map((r) => (
+                    <tr key={r.id || r.pattern}>
+                      <td>
+                        <span
+                          class={`pill ${
+                            r.action === "allow"
+                              ? "text-[#34d399] border-emerald-500/30"
+                              : r.action === "deny"
+                              ? "text-[#f87171] border-red-500/30"
+                              : "text-[#fbbf24] border-amber-500/30"
+                          }`}
+                        >
+                          {r.action}
+                        </span>
+                      </td>
+                      <td class="text-[#8b98a9]">{r.asset_type}</td>
+                      <td class="font-semibold text-white">{r.pattern}</td>
+                      <td class="r text-[#738196]">{r.priority}</td>
+                      <td class="text-[#8b98a9] text-[11px]">
+                        {r.allowed_ports?.length ? `ports:${r.allowed_ports.join(",")}` : "ports:*"}
+                        {r.denied_paths?.length ? ` · deny:${r.denied_paths.join(",")}` : ""}
+                      </td>
+                      <td class="r">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRule(r.id)}
+                          class="text-[#f87171] hover:underline text-[11px]"
+                        >
+                          del
+                        </button>
                       </td>
                     </tr>
-                  ) : rules.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} class="py-6 text-center text-slate-500">
-                        Nenhuma regra explícita cadastrada. O motor operará em modo Fail-Closed (UNKNOWN_DENY).
-                      </td>
-                    </tr>
-                  ) : (
-                    rules.map((r) => (
-                      <tr key={r.id || r.pattern} class="hover:bg-slate-800/40 transition">
-                        <td class="py-2.5 px-3">
-                          <span
-                            class={`inline-block px-2 py-0.5 rounded font-mono font-semibold uppercase text-[10px] ${
-                              r.action === "allow"
-                                ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                                : r.action === "deny"
-                                ? "bg-red-500/15 text-red-400 border border-red-500/30"
-                                : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                            }`}
-                          >
-                            {r.action}
-                          </span>
-                        </td>
-                        <td class="py-2.5 px-3 font-mono text-slate-300">{r.asset_type}</td>
-                        <td class="py-2.5 px-3 font-mono font-medium text-slate-100">{r.pattern}</td>
-                        <td class="py-2.5 px-3 font-mono text-slate-400">{r.priority}</td>
-                        <td class="py-2.5 px-3 text-slate-400 font-mono text-[11px]">
-                          {r.allowed_ports?.length ? `Ports: ${r.allowed_ports.join(",")}` : "Ports: *"}
-                          {r.denied_paths?.length ? ` | Deny: ${r.denied_paths.join(",")}` : ""}
-                        </td>
-                        <td class="py-2.5 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRule(r.id)}
-                            class="text-red-400 hover:text-red-300 hover:underline font-mono text-[11px]"
-                          >
-                            Remover
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Form to Add New Scope Rule */}
-            <form onSubmit={handleAddRule} class="mt-5 pt-4 border-t border-slate-800 space-y-3">
-              <h4 class="text-xs font-mono uppercase tracking-wider text-slate-300">
-                + Adicionar Nova Regra ao Escopo
-              </h4>
-              <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Ação</label>
-                  <select
-                    value={ruleAction}
-                    onChange={(e) => setRuleAction((e.target as HTMLSelectElement).value)}
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono"
-                  >
-                    <option value="allow">allow</option>
-                    <option value="deny">deny</option>
-                    <option value="discover_only">discover_only</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Tipo de Ativo</label>
-                  <select
-                    value={ruleAssetType}
-                    onChange={(e) => setRuleAssetType((e.target as HTMLSelectElement).value)}
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono"
-                  >
-                    <option value="domain">domain</option>
-                    <option value="wildcard_domain">wildcard_domain</option>
-                    <option value="hostname">hostname</option>
-                    <option value="url">url</option>
-                    <option value="cidr">cidr</option>
-                    <option value="ip">ip</option>
-                  </select>
-                </div>
-
-                <div class="sm:col-span-2">
-                  <label class="block text-[11px] text-slate-400 mb-1">Padrão (Pattern)</label>
-                  <input
-                    type="text"
-                    value={rulePattern}
-                    onInput={(e) => setRulePattern((e.target as HTMLInputElement).value)}
-                    placeholder="ex: *.scanme.nmap.org ou admin.scanme.nmap.org"
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 font-mono"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Prioridade</label>
-                  <input
-                    type="number"
-                    value={rulePriority}
-                    onInput={(e) => setRulePriority(Number((e.target as HTMLInputElement).value))}
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono"
-                  />
-                </div>
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Portas Permitidas</label>
-                  <input
-                    type="text"
-                    value={rulePorts}
-                    onInput={(e) => setRulePorts((e.target as HTMLInputElement).value)}
-                    placeholder="80, 443"
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono"
-                  />
-                </div>
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Paths Proibidos</label>
-                  <input
-                    type="text"
-                    value={ruleDeniedPaths}
-                    onInput={(e) => setRuleDeniedPaths((e.target as HTMLInputElement).value)}
-                    placeholder="/admin, /logout"
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 font-mono"
-                  />
-                </div>
-                <div>
-                  <button
-                    type="submit"
-                    disabled={addingRule}
-                    class="w-full bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-semibold text-xs py-1.5 px-3 rounded-lg transition"
-                  >
-                    {addingRule ? "Salvando..." : "Adicionar Regra"}
-                  </button>
-                </div>
-              </div>
-            </form>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
 
-        {/* Right Column: Live 7-Layer ScopeEngine Simulator (5 cols) */}
-        <div class="lg:col-span-5 space-y-6">
-          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
+        {/* Right 5 Cols: Live 7-Tier Simulator */}
+        <div class="lg:col-span-5 card card-pad space-y-3.5">
+          <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
+            <span class="card-title">LIVE 7-TIER SCOPE EVALUATOR</span>
+            <div class="flex items-center gap-1.5 font-mono text-[10px]">
+              <button
+                type="button"
+                onClick={() => applyPreset("https://scanme.nmap.org", "443", "/")}
+                class="pill text-[#34d399] hover:border-[#34d399]"
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("http://169.254.169.254/latest/meta-data/", "80", "/latest/meta-data/")}
+                class="pill text-[#f87171] hover:border-[#f87171]"
+              >
+                SSRF 169.254
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("https://unscoped.internal.org/login", "443", "/login")}
+                class="pill text-[#fbbf24] hover:border-[#fbbf24]"
+              >
+                Unscoped
+              </button>
+            </div>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              runEvaluate();
+            }}
+            class="space-y-2.5"
+          >
             <div>
-              <span class="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-                Simulador Ao Vivo do ScopeEngine
-              </span>
-              <h3 class="text-sm font-semibold text-slate-100 mt-1.5">
-                Validação de Alvo em 7 Camadas + Guarda Anti-SSRF
-              </h3>
+              <label class="field-label">Target URL / Host / IP</label>
+              <input
+                type="text"
+                value={targetInput}
+                onInput={(e) => setTargetInput((e.target as HTMLInputElement).value)}
+                placeholder="https://scanme.nmap.org"
+                class="input"
+              />
             </div>
 
-            {/* Quick Presets */}
-            <div class="space-y-1.5">
-              <span class="text-[11px] text-slate-400 font-mono">Presets Rápidos de Teste:</span>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => applyPreset("https://scanme.nmap.org", "443", "/")}
-                  class="text-[11px] bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded px-2.5 py-1 font-mono transition"
-                >
-                  Testar scanme.nmap.org (Allow)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyPreset("http://169.254.169.254/latest/meta-data/", "80", "/latest/meta-data/")}
-                  class="text-[11px] bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 rounded px-2.5 py-1 font-mono transition"
-                >
-                  Testar Metadata AWS 169.254.169.254 (SSRF Block)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyPreset("https://unscoped-corp.internal.org/login", "443", "/login")}
-                  class="text-[11px] bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded px-2.5 py-1 font-mono transition"
-                >
-                  Testar Host Fora de Escopo (Fail-Closed)
-                </button>
-              </div>
-            </div>
-
-            {/* Target Evaluation Form */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                runEvaluate().finally(() => setEvaluating(false));
-              }}
-              class="space-y-3"
-            >
+            <div class="grid grid-cols-3 gap-2 items-end">
               <div>
-                <label class="block text-xs text-slate-400 mb-1">URL / Host / IP Alvo</label>
+                <label class="field-label">Port</label>
                 <input
                   type="text"
-                  value={targetInput}
-                  onInput={(e) => setTargetInput((e.target as HTMLInputElement).value)}
-                  placeholder="https://scanme.nmap.org ou 169.254.169.254"
-                  class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-cyan-500 focus:outline-none"
+                  value={portInput}
+                  onInput={(e) => setPortInput((e.target as HTMLInputElement).value)}
+                  placeholder="443"
+                  class="input"
                 />
               </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Porta (Opcional)</label>
-                  <input
-                    type="text"
-                    value={portInput}
-                    onInput={(e) => setPortInput((e.target as HTMLInputElement).value)}
-                    placeholder="443"
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 font-mono"
-                  />
-                </div>
-                <div>
-                  <label class="block text-[11px] text-slate-400 mb-1">Path (Opcional)</label>
-                  <input
-                    type="text"
-                    value={pathInput}
-                    onInput={(e) => setPathInput((e.target as HTMLInputElement).value)}
-                    placeholder="/api/v1/users"
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 font-mono"
-                  />
-                </div>
+              <div>
+                <label class="field-label">Path</label>
+                <input
+                  type="text"
+                  value={pathInput}
+                  onInput={(e) => setPathInput((e.target as HTMLInputElement).value)}
+                  placeholder="/api"
+                  class="input"
+                />
               </div>
-
-              <button
-                type="submit"
-                disabled={evaluating}
-                class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-slate-950 font-bold text-xs py-2.5 rounded-lg transition uppercase tracking-wider font-mono"
-              >
-                {evaluating ? "Avaliando 7 Camadas..." : "Avaliar Alvo no ScopeEngine"}
+              <button type="submit" disabled={evaluating} class="btn btn-primary w-full">
+                {evaluating ? "..." : "Evaluate →"}
               </button>
-            </form>
-
-            {/* Verdict Card */}
-            {verdict && (
-              <div
-                class={`rounded-xl p-4 border ${
-                  verdict.allowed
-                    ? "bg-emerald-950/30 border-emerald-500/50"
-                    : "bg-red-950/30 border-red-500/50"
-                } space-y-3`}
-              >
-                <div class="flex items-center justify-between">
-                  <span
-                    class={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold uppercase ${
-                      verdict.allowed
-                        ? "bg-emerald-500 text-slate-950"
-                        : "bg-red-500 text-slate-950"
-                    }`}
-                  >
-                    {verdict.allowed ? "✓ ALLOWED (PERMITIDO)" : "✕ BLOCKED (BLOQUEADO)"}
-                  </span>
-                  <span class="text-xs font-mono text-slate-300">
-                    scope_state:{" "}
-                    <strong class="text-cyan-300">{verdict.scope_state || (verdict.allowed ? "in_scope_explicit" : "out_of_scope")}</strong>
-                  </span>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-slate-950/80 p-2.5 rounded-lg border border-slate-800">
-                  <div>
-                    <span class="text-slate-500 block text-[10px]">PRECEDENCE TIER</span>
-                    <span class="text-amber-300 font-semibold">
-                      {matchedTierId || "UNKNOWN_DENY"}
-                    </span>
-                  </div>
-                  <div>
-                    <span class="text-slate-500 block text-[10px]">MATCHED PATTERN</span>
-                    <span class="text-slate-200">
-                      {verdict.matched_pattern || "N/A (Fail-Closed)"}
-                    </span>
-                  </div>
-                </div>
-
-                <div class="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded border border-slate-800/80 font-mono">
-                  <span class="text-slate-500 block text-[10px] uppercase mb-0.5">Motivo / Razão Técnica:</span>
-                  {verdict.reason}
-                </div>
-              </div>
-            )}
-
-            {/* 7-Layer Hierarchy Visualizer */}
-            <div class="pt-2 border-t border-slate-800 space-y-1.5">
-              <div class="text-[11px] font-mono uppercase text-slate-400">
-                Hierarquia de Precedência (7 Camadas):
-              </div>
-              {PRECEDENCE_TIERS.map((tier) => {
-                const isMatched = matchedTierId === tier.id;
-                return (
-                  <div
-                    key={tier.id}
-                    class={`px-3 py-1.5 rounded-lg border text-xs transition flex items-center justify-between ${
-                      isMatched
-                        ? verdict?.allowed
-                          ? "bg-emerald-500/20 border-emerald-400 text-emerald-200 font-semibold shadow"
-                          : "bg-red-500/20 border-red-400 text-red-200 font-semibold shadow"
-                        : "bg-slate-950/50 border-slate-800/70 text-slate-400"
-                    }`}
-                  >
-                    <div>
-                      <div class="font-mono text-[11px]">{tier.label}</div>
-                      <div class="text-[10px] opacity-75">{tier.desc}</div>
-                    </div>
-                    {isMatched && (
-                      <span class="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-950 text-amber-300 border border-amber-400/40">
-                        MATCH
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
             </div>
+          </form>
+
+          {/* Verdict Banner with resolved_ip & target_canonical */}
+          {verdict && (
+            <div
+              class={`p-3 rounded-lg border num text-xs space-y-2 ${
+                verdict.allowed
+                  ? "bg-emerald-950/20 border-[#34d399]/50"
+                  : "bg-red-950/20 border-[#f87171]/50"
+              }`}
+            >
+              <div class="flex items-center justify-between">
+                <span
+                  class={`pill font-bold ${
+                    verdict.allowed ? "text-[#34d399] border-[#34d399]/40" : "text-[#f87171] border-[#f87171]/40"
+                  }`}
+                >
+                  {verdict.allowed ? "✓ ALLOWED" : "✕ BLOCKED"}
+                </span>
+                <span class="text-[#22d3ee]">
+                  {verdict.scope_state || (verdict.allowed ? "in_scope_explicit" : "out_of_scope")}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-2 gap-2 p-2 rounded bg-[#070a0f] border border-[#1b2230] text-[11px]">
+                <div>
+                  <span class="text-[#738196] block text-[10px]">CANONICAL TARGET</span>
+                  <span class="text-white truncate block">{verdict.target_canonical || targetInput}</span>
+                </div>
+                <div>
+                  <span class="text-[#738196] block text-[10px]">RESOLVED IP / PATTERN</span>
+                  <span class="text-[#fbbf24] truncate block">
+                    {verdict.resolved_ip || verdict.matched_pattern || "fail-closed"}
+                  </span>
+                </div>
+              </div>
+
+              <div class="text-[11px] text-[#8b98a9]">{verdict.reason}</div>
+            </div>
+          )}
+
+          {/* Compact 1-Line-Per-Tier Stack (expands description only on match) */}
+          <div class="space-y-1 pt-1">
+            {PRECEDENCE_TIERS.map((tier) => {
+              const isMatched = matchedTierId === tier.id;
+              return (
+                <div
+                  key={tier.id}
+                  class={`px-2.5 py-1.5 rounded border font-mono text-[11px] transition-all duration-150 ${
+                    isMatched
+                      ? verdict?.allowed
+                        ? "bg-emerald-950/30 border-[#34d399] text-white"
+                        : "bg-red-950/30 border-[#f87171] text-white"
+                      : "bg-[#070a0f]/60 border-[#1b2230] text-[#738196]"
+                  }`}
+                >
+                  <div class="flex items-center justify-between">
+                    <span>{tier.label}</span>
+                    {isMatched && <span class="text-[10px] text-[#fbbf24] font-bold">● MATCH</span>}
+                  </div>
+                  {isMatched && (
+                    <div class="text-[10px] text-[#8b98a9] mt-1 font-sans">{tier.desc}</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
 
       {/* Modal: Novo Programa */}
       {showNewProgramModal && (
-        <div class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div class="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div class="flex items-center justify-between">
-              <h3 class="text-base font-semibold text-slate-100">Cadastrar Novo Programa</h3>
-              <button
-                type="button"
-                onClick={() => setShowNewProgramModal(false)}
-                class="text-slate-400 hover:text-slate-200 font-mono text-sm"
-              >
+        <div class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div class="card card-pad max-w-md w-full space-y-4">
+            <div class="flex items-center justify-between border-b border-[#1b2230] pb-2.5">
+              <span class="card-title text-white">CREATE NEW PROGRAM</span>
+              <button type="button" onClick={() => setShowNewProgramModal(false)} class="text-[#8b98a9] hover:text-white">
                 ✕
               </button>
             </div>
             <form onSubmit={handleCreateProgram} class="space-y-3">
               <div>
-                <label class="block text-xs text-slate-400 mb-1">Slug Único (ID)</label>
+                <label class="field-label">Slug (Unique ID)</label>
                 <input
                   type="text"
                   value={newProgSlug}
                   onInput={(e) => setNewProgSlug((e.target as HTMLInputElement).value)}
-                  placeholder="ex: acme-bounty"
-                  class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+                  placeholder="acme-bounty"
+                  class="input"
                   required
                 />
               </div>
               <div>
-                <label class="block text-xs text-slate-400 mb-1">Nome do Programa</label>
+                <label class="field-label">Program Name</label>
                 <input
                   type="text"
                   value={newProgName}
                   onInput={(e) => setNewProgName((e.target as HTMLInputElement).value)}
-                  placeholder="ex: ACME Corp Bug Bounty"
-                  class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100"
+                  placeholder="ACME Bug Bounty"
+                  class="input"
                   required
                 />
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div>
-                  <label class="block text-xs text-slate-400 mb-1">Plataforma</label>
+                  <label class="field-label">Platform</label>
                   <select
                     value={newProgPlatform}
                     onChange={(e) => setNewProgPlatform((e.target as HTMLSelectElement).value)}
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+                    class="input"
                   >
                     <option value="hackerone">hackerone</option>
                     <option value="bugcrowd">bugcrowd</option>
@@ -750,11 +705,11 @@ export default function ScopeLiveTester({
                   </select>
                 </div>
                 <div>
-                  <label class="block text-xs text-slate-400 mb-1">Política Padrão</label>
+                  <label class="field-label">Policy</label>
                   <select
                     value={newProgPolicy}
                     onChange={(e) => setNewProgPolicy((e.target as HTMLSelectElement).value)}
-                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+                    class="input"
                   >
                     <option value="bounty-safe">bounty-safe</option>
                     <option value="passive-only">passive-only</option>
@@ -762,20 +717,12 @@ export default function ScopeLiveTester({
                   </select>
                 </div>
               </div>
-              <div class="flex justify-end gap-2 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowNewProgramModal(false)}
-                  class="px-4 py-2 rounded-lg text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  Cancelar
+              <div class="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setShowNewProgramModal(false)} class="btn">
+                  Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={creatingProgram}
-                  class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-semibold text-xs px-4 py-2 rounded-lg"
-                >
-                  {creatingProgram ? "Criando..." : "Criar Programa"}
+                <button type="submit" disabled={creatingProgram} class="btn btn-primary">
+                  {creatingProgram ? "Creating..." : "Create Program"}
                 </button>
               </div>
             </form>

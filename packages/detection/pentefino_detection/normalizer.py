@@ -45,8 +45,16 @@ class FindingNormalizer:
         redactor: Any | None = None,
     ):
         self.db_session = db_session
-        self.s3_client = s3_client
+        self.s3_client = s3_client if s3_client is not None else self._resolve_default_s3_client()
         self.redactor = redactor or self._resolve_default_redactor()
+
+    @staticmethod
+    def _resolve_default_s3_client() -> Any:
+        try:
+            from pentefino_proxy.s3_client import S3EvidenceClient
+            return S3EvidenceClient()
+        except Exception:
+            return None
 
     @staticmethod
     def _resolve_default_redactor() -> Any:
@@ -55,6 +63,18 @@ class FindingNormalizer:
             return Redactor()
         except ImportError:
             return None
+
+    @staticmethod
+    def _determine_evidence_level(raw_item: dict[str, Any]) -> str:
+        explicit = raw_item.get("evidence_level")
+        if explicit and str(explicit).upper() in ("E0", "E1", "E2", "E3"):
+            return str(explicit).upper()
+        proto_type = str(raw_item.get("type") or "").strip().lower()
+        if proto_type == "passive":
+            return EvidenceLevel.E0.value
+        if proto_type in ("dns", "ssl", "whois") and not raw_item.get("request"):
+            return EvidenceLevel.E1.value
+        return EvidenceLevel.E2.value
 
     async def normalize_and_persist(
         self,
@@ -213,7 +233,7 @@ class FindingNormalizer:
                         detector_id=resolved_detector_id,
                         advisory_id=advisory_id,
                         status=initial_status,
-                        evidence_level=EvidenceLevel.E2.value,
+                        evidence_level=self._determine_evidence_level(raw_item),
                         confidence=confidence,
                         first_seen=now,
                         last_seen=now,

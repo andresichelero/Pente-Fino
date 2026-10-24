@@ -63,7 +63,7 @@ services:
   # SeaweedFS Local S3-Compatible Object Store & Filer (Apache-2.0)
   # ============================================================================
   seaweedfs:
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:3.79
     container_name: pentefino_seaweedfs
     restart: unless-stopped
     command: >
@@ -129,7 +129,7 @@ services:
 networks:
   pentefino-net:
     driver: bridge
-    name: pentefino-net
+    name: pentefino_pentefino-net
     ipam:
       driver: default
       config:

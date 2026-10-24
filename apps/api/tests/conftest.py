@@ -6,8 +6,9 @@ import uuid
 
 import httpx
 from httpx import ASGITransport
+import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,12 +28,18 @@ TEST_DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 @pytest_asyncio.fixture
 async def db_engine() -> AsyncIterator[AsyncEngine]:
-    """Create an isolated NullPool async engine per test to avoid event-loop binding issues."""
+    """Create an isolated NullPool async engine per test; skip if PostgreSQL is offline."""
     engine = create_async_engine(
         TEST_DATABASE_URL,
         poolclass=NullPool,
         future=True,
     )
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"PostgreSQL database unreachable for live API test: {exc}")
     try:
         yield engine
     finally:

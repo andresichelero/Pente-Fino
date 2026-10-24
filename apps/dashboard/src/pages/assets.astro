@@ -37,77 +37,92 @@ const countOut =
   graphData.summary?.out_of_scope ||
   0;
 const countObservationIps =
-  graphData.nodes.filter((n) => n.data?.type === "observation_ip").length ||
+  graphData.nodes.filter((n: any) => (n.node_type || n.data?.type) === "observed_ip" || (n.node_type || n.data?.type) === "observation_ip").length ||
   graphData.summary?.observation_ips ||
   0;
+const totalAssets = Math.max(1, countExplicit + countDerived + countCandidate + countOut);
 ---
 
 <BaseLayout
-  title="Ativos & Grafo Topológico de Superfície"
-  subtitle="Descoberta Subfinder / DNSX / HTTPX • Visualização Cytoscape.js & Invariante Anti-Escopo de IPs"
+  title="Assets & Surface Topology Graph"
+  subtitle="Subfinder / DNSX / HTTPX Discovery • Critical IP Invariant (DNS IPs never promoted to scoped Asset)"
   activeNav="assets"
 >
-  <!-- Critical IP Invariant Banner -->
-  <section class="bg-cyan-950/20 border border-accent-cyan/40 rounded-xl p-5 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-    <div class="space-y-1">
-      <div class="flex items-center gap-2">
-        <span class="px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40">
-          CRITICAL ARCHITECTURAL INVARIANT
-        </span>
-        <h2 class="text-sm font-bold text-white font-mono">
-          Resolução DNS A/AAAA Nunca Promove IPs para Escopo Ativo
-        </h2>
-      </div>
-      <p class="text-xs text-slate-300 leading-relaxed max-w-4xl">
-        Quando um domínio em escopo (<code class="text-emerald-300">in_scope_explicit</code> ou{" "}
-        <code class="text-cyan-300">in_scope_derived</code>) resolve para endereços IPv4/IPv6 de CDNs
-        compartilhadas (Cloudflare, Akamai, Fastly, AWS CloudFront), o adaptador <code class="text-amber-300">dnsx</code>{" "}
-        grava esses IPs exclusivamente como metadados JSON em <code class="text-cyan-300">Observation</code>. Nenhum
-        registro <code class="text-white">Asset(asset_type='ip')</code> em escopo é criado a partir de resolução DNS,
-        eliminando o risco de varrer infraestrutura multi-tenant de terceiros.
-      </p>
+  <!-- Compact Critical IP Invariant Strip -->
+  <section class="card card-pad flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-2.5 font-mono text-xs">
+      <span class="w-2 h-2 rounded-full bg-[#22d3ee]"></span>
+      <span class="font-semibold text-white">Critical IP Invariant · Enforced</span>
+      <details class="hint">
+        <summary>?</summary>
+        <div>
+          Endereços IPv4/IPv6 resolvidos via DNS (incluindo bordas multi-tenant Cloudflare/Akamai/Fastly) são persistidos apenas como metadados em Observation(type="dns") e nunca promovidos para Asset(asset_type="ip").
+        </div>
+      </details>
+      <span class="text-[#263042]">·</span>
+      <span class="text-[#8b98a9]">DNS A/AAAA records stay strictly in Observation metadata</span>
     </div>
 
-    <div class="flex items-center gap-3 shrink-0 font-mono text-xs">
-      <div class="px-3 py-2 rounded-lg bg-slate-950/80 border border-slate-800 text-center">
-        <div class="text-[10px] text-slate-400">OBSERVATION IPs</div>
-        <div class="text-base font-bold text-accent-cyan">{countObservationIps}</div>
+    <div class="flex items-center gap-2 font-mono text-[11px] tabular-nums">
+      <span class="pill text-[#22d3ee]">
+        <span>observed_ip</span>
+        <span class="font-semibold text-white">{countObservationIps}</span>
+      </span>
+      <span class="pill text-[#34d399]">
+        <span>promoted_ip_assets</span>
+        <span class="font-semibold">0 (BLOCKED)</span>
+      </span>
+    </div>
+  </section>
+
+  <!-- 4 Compact ScopeState KPI Cards with Capacity Bars -->
+  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+    <div class="card card-pad space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="card-title">IN_SCOPE_EXPLICIT</span>
+        <span class="font-mono text-[10px] text-[#34d399]">TIER 5</span>
       </div>
-      <div class="px-3 py-2 rounded-lg bg-slate-950/80 border border-slate-800 text-center">
-        <div class="text-[10px] text-slate-400">PROMOTED TO ASSET</div>
-        <div class="text-base font-bold text-accent-emerald">0 (BLOCKED)</div>
+      <div class="kpi text-[#34d399]">{countExplicit}</div>
+      <div class="bar text-[#34d399]">
+        <span style={`width: ${Math.max(4, Math.round((countExplicit / totalAssets) * 100))}%`}></span>
+      </div>
+    </div>
+
+    <div class="card card-pad space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="card-title">IN_SCOPE_DERIVED</span>
+        <span class="font-mono text-[10px] text-[#22d3ee]">TIER 6</span>
+      </div>
+      <div class="kpi text-[#22d3ee]">{countDerived}</div>
+      <div class="bar text-[#22d3ee]">
+        <span style={`width: ${Math.max(4, Math.round((countDerived / totalAssets) * 100))}%`}></span>
+      </div>
+    </div>
+
+    <div class="card card-pad space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="card-title">CANDIDATE</span>
+        <span class="font-mono text-[10px] text-[#fbbf24]">PASSIVE</span>
+      </div>
+      <div class="kpi text-[#fbbf24]">{countCandidate}</div>
+      <div class="bar text-[#fbbf24]">
+        <span style={`width: ${Math.max(4, Math.round((countCandidate / totalAssets) * 100))}%`}></span>
+      </div>
+    </div>
+
+    <div class="card card-pad space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="card-title">OUT_OF_SCOPE</span>
+        <span class="font-mono text-[10px] text-[#f87171]">BLOCKED</span>
+      </div>
+      <div class="kpi text-[#f87171]">{countOut}</div>
+      <div class="bar text-[#f87171]">
+        <span style={`width: ${Math.max(4, Math.round((countOut / totalAssets) * 100))}%`}></span>
       </div>
     </div>
   </section>
 
-  <!-- Summary Counters by ScopeState -->
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
-      <div class="text-[11px] font-mono text-slate-400 uppercase">IN_SCOPE_EXPLICIT</div>
-      <div class="text-2xl font-mono font-bold text-accent-emerald mt-1">{countExplicit}</div>
-      <div class="text-[11px] text-slate-500 mt-0.5">Domínios / hosts explicitamente autorizados</div>
-    </div>
-
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
-      <div class="text-[11px] font-mono text-slate-400 uppercase">IN_SCOPE_DERIVED</div>
-      <div class="text-2xl font-mono font-bold text-accent-cyan mt-1">{countDerived}</div>
-      <div class="text-[11px] text-slate-500 mt-0.5">Subdomínios derivados de regra wildcard</div>
-    </div>
-
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
-      <div class="text-[11px] font-mono text-slate-400 uppercase">CANDIDATE (DISCOVER_ONLY)</div>
-      <div class="text-2xl font-mono font-bold text-accent-amber mt-1">{countCandidate}</div>
-      <div class="text-[11px] text-slate-500 mt-0.5">Apenas enumeração passiva sem scan ativo</div>
-    </div>
-
-    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
-      <div class="text-[11px] font-mono text-slate-400 uppercase">OUT_OF_SCOPE</div>
-      <div class="text-2xl font-mono font-bold text-accent-crimson mt-1">{countOut}</div>
-      <div class="text-[11px] text-slate-500 mt-0.5">Bloqueados pelo motor Fail-Closed</div>
-    </div>
-  </section>
-
-  <!-- Interactive Cytoscape.js Island -->
+  <!-- Interactive Topological Graph Island -->
   <section>
     <AssetRelationshipGraph
       client:load

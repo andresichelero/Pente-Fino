@@ -30,26 +30,36 @@ def normalize_target(target_in: Union[str, ScopeTarget]) -> ScopeTarget:
     return ScopeTarget.from_url(str(target_in))
 
 
+def _normalize_url_path(raw_path: str) -> str:
+    """Unquotes, strips matrix parameters, normalizes slashes, and lowercases path."""
+    unquoted = urllib.parse.unquote(raw_path or "/")
+    unquoted = unquoted.replace("\\", "/")
+    segments = [seg.split(";", 1)[0] for seg in unquoted.split("/")]
+    collapsed = re.sub(r"/+", "/", "/".join(segments))
+    norm = posixpath.normpath(collapsed)
+    norm = re.sub(r"^/+", "/", norm)
+    if not norm.startswith("/"):
+        norm = f"/{norm}"
+    return norm.lower()
+
+
 def _path_matches(target_path: str, denied_pattern: str) -> bool:
     """Checks if a normalized target path matches a denied path pattern."""
-    # Unquote and normalize path
-    unquoted_target = urllib.parse.unquote(target_path)
-    norm_target = posixpath.normpath(unquoted_target)
-    if not norm_target.startswith("/"):
-        norm_target = f"/{norm_target}"
+    norm_target = _normalize_url_path(target_path)
 
     unquoted_pattern = urllib.parse.unquote(denied_pattern.strip())
     
     # Regex match if starts with ^
     if unquoted_pattern.startswith("^"):
         try:
-            return bool(re.search(unquoted_pattern, norm_target))
+            return bool(re.search(unquoted_pattern, norm_target, re.IGNORECASE))
         except re.error:
             pass
 
-    norm_pattern = posixpath.normpath(unquoted_pattern)
-    if not norm_pattern.startswith("/") and not unquoted_pattern.startswith("*"):
-        norm_pattern = f"/{norm_pattern}"
+    if unquoted_pattern.startswith("*"):
+        norm_pattern = unquoted_pattern.replace("\\", "/").lower()
+    else:
+        norm_pattern = _normalize_url_path(unquoted_pattern)
 
     # Exact match
     if norm_target == norm_pattern:
@@ -61,7 +71,7 @@ def _path_matches(target_path: str, denied_pattern: str) -> bool:
         return True
 
     # Glob match (e.g. /api/private* or */admin/*)
-    if fnmatch.fnmatch(norm_target, unquoted_pattern):
+    if fnmatch.fnmatch(norm_target, unquoted_pattern.lower()):
         return True
 
     return False
@@ -85,8 +95,17 @@ def _match_exact(target: ScopeTarget, rule: ScopeRule) -> bool:
         return target_ip is not None and rule_ip is not None and target_ip == rule_ip
 
     elif rule.asset_type == AssetType.URL:
-        # Match URL prefix
-        return target.canonical_url.lower().startswith(clean_pattern)
+        # Match URL prefix with strict authority/path boundary
+        target_url = target.canonical_url.lower()
+        if target_url == clean_pattern:
+            return True
+        if clean_pattern.endswith("/"):
+            return target_url.startswith(clean_pattern)
+        return (
+            target_url.startswith(f"{clean_pattern}/")
+            or target_url.startswith(f"{clean_pattern}?")
+            or target_url.startswith(f"{clean_pattern}#")
+        )
 
     return False
 

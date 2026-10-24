@@ -157,7 +157,7 @@ async def get_asset_graph(
             # DNS Observations -> Strictly metadata-only observed_ip nodes (NEVER scoped assets)
             if obs.observation_type == "dns":
                 raw_ips: list[str] = []
-                for key in ("a_records", "aaaa_records", "ips", "resolved_ips"):
+                for key in ("a", "aaaa", "a_records", "aaaa_records", "ips", "resolved_ips"):
                     val = meta.get(key)
                     if isinstance(val, list):
                         raw_ips.extend(str(ip).strip() for ip in val if ip)

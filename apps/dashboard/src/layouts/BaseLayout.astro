@@ -1,4 +1,5 @@
 ---
+import "../styles/global.css";
 import { fetchHealth } from "../lib/api";
 
 interface Props {
@@ -15,51 +16,51 @@ const navItems = [
   {
     href: "/",
     id: "overview",
-    label: "Visão Geral",
-    sub: "Executive Overview",
-    badge: "KPIs",
+    label: "Overview",
+    badge: "KPI",
+    icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0h6",
   },
   {
     href: "/programs",
     id: "programs",
-    label: "Programas & Escopo",
-    sub: "7-Tier Governance",
-    badge: "FAIL-CLOSED",
+    label: "Programs & Scope",
+    badge: "7-TIER",
+    icon: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
   },
   {
     href: "/assets",
     id: "assets",
-    label: "Ativos & Grafo Topológico",
-    sub: "Discovery & IP Invariant",
-    badge: "CYTOSCAPE",
+    label: "Assets & Graph",
+    badge: "IP-INV",
+    icon: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
   },
   {
     href: "/templates",
     id: "templates",
-    label: "Catálogo Nuclei",
-    sub: "14.107+ AST-Classified Templates",
+    label: "Nuclei Catalog",
     badge: "14.1K",
+    icon: "M4 6h16M4 10h16M4 14h16M4 18h16",
   },
   {
     href: "/scans",
     id: "scans",
-    label: "Detection Planner & Scans",
-    sub: "CDN Pruning & Runner",
-    badge: "RUNNER",
+    label: "Planner & Runner",
+    badge: "CDN",
+    icon: "M13 10V3L4 14h7v7l9-11h-7z",
   },
   {
     href: "/findings",
     id: "findings",
-    label: "Triagem & Forense E2",
-    sub: "Kanban & Bug Bounty Reports",
+    label: "Triage & E2",
     badge: "E0–E3",
+    icon: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z",
   },
   {
     href: "/telemetry",
     id: "telemetry",
-    label: "Telemetria Egress Proxy",
-    sub: "Valkey Token-Bucket & SSRF Guard",
-    badge: "LIVE WS",
+    label: "Egress Telemetry",
+    badge: "0.5/s",
+    icon: "M22 12h-4l-3 9L9 3l-3 9H2",
   },
 ];
 
@@ -69,7 +70,7 @@ function isActive(href: string, id: string): boolean {
   return currentPath.startsWith(href);
 }
 
-const templateCountFormatted = (health.template_count || 14107).toLocaleString("pt-BR");
+const templateCountFormatted = (health.template_count || 14107).toLocaleString("en-US");
 ---
 
 <!doctype html>
@@ -77,7 +78,12 @@ const templateCountFormatted = (health.template_count || 14107).toLocaleString("
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{title} | PenteFino SecOps Console</title>
+    <title>{title} | PenteFino Ops Console</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1117' stroke='%2310b981' stroke-width='2'/%3E%3Ctext x='6' y='21' font-family='monospace' font-weight='bold' font-size='14' fill='%2334d399'%3EPF%3C/text%3E%3C/svg%3E"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -85,164 +91,197 @@ const templateCountFormatted = (health.template_count || 14107).toLocaleString("
       rel="stylesheet"
     />
   </head>
-  <body class="bg-bg-abyss text-slate-100 font-sans antialiased selection:bg-accent-emerald/30 selection:text-emerald-200 min-h-screen flex">
-    <!-- Fixed Left Sidebar -->
-    <aside class="w-72 bg-bg-panel border-r border-border-grid flex flex-col fixed inset-y-0 left-0 z-30 select-none">
-      <!-- Brand Header -->
-      <div class="p-5 border-b border-border-grid flex items-center justify-between">
-        <a href="/" class="flex items-center gap-3 group">
-          <div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-accent-emerald/40 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.2)] group-hover:border-accent-emerald transition">
-            <span class="font-mono font-bold text-accent-emerald text-lg tracking-tighter">PF</span>
+  <body class="bg-[#070a0f] text-[#e6edf3] font-sans antialiased min-h-screen flex">
+    <!-- Ultra-Compact Collapsible Sidebar -->
+    <aside
+      id="pf-sidebar"
+      class="w-52 bg-[#0d1117] border-r border-[#1b2230] flex flex-col fixed inset-y-0 left-0 z-30 select-none transition-all duration-200"
+    >
+      <!-- Brand Row -->
+      <div class="h-12 px-3 border-b border-[#1b2230] flex items-center justify-between">
+        <a href="/" class="flex items-center gap-2.5 min-w-0">
+          <div class="w-7 h-7 rounded-md bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center shrink-0">
+            <span class="font-mono font-bold text-[#34d399] text-xs">PF</span>
           </div>
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="font-mono font-bold text-white tracking-wider text-base">PENTEFINO</span>
-              <span class="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-accent-emerald/15 text-accent-emerald border border-accent-emerald/30">
-                v0.5
-              </span>
-            </div>
-            <p class="text-[11px] text-slate-400 font-mono">Bug Bounty & AppSec Ops</p>
-          </div>
+          <span class="pf-nav-label font-mono font-bold text-xs tracking-wider text-white truncate">
+            PENTEFINO
+          </span>
         </a>
+        <button
+          id="pf-sidebar-toggle"
+          type="button"
+          title="Recolher / Expandir barra lateral"
+          aria-label="Toggle sidebar"
+          class="w-6 h-6 rounded border border-[#1b2230] bg-[#11161f] text-[#8b98a9] hover:text-white flex items-center justify-center text-xs font-mono shrink-0"
+        >
+          «
+        </button>
       </div>
 
-      <!-- Governance Invariant Banner -->
-      <div class="px-4 py-2.5 bg-slate-950/70 border-b border-border-grid flex items-center justify-between text-[11px] font-mono">
-        <span class="text-slate-400">ENGINE MODE</span>
-        <span class="text-accent-emerald font-semibold flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-accent-emerald animate-pulse"></span>
-          FAIL-CLOSED
-        </span>
-      </div>
-
-      <!-- Primary Navigation -->
-      <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-1.5">
+      <!-- Compact Navigation Links -->
+      <nav class="flex-1 overflow-y-auto px-2 py-2.5 space-y-1">
         {
           navItems.map((item) => {
             const active = isActive(item.href, item.id);
             return (
               <a
                 href={item.href}
+                title={`${item.label} (${item.badge})`}
                 class:list={[
-                  "block px-3.5 py-2.5 rounded-lg border transition-all duration-150 group",
+                  "flex items-center justify-between gap-2 px-2.5 py-2 rounded-md border text-xs transition-all duration-150",
                   active
-                    ? "bg-emerald-950/30 border-accent-emerald/50 text-white shadow-[inset_2px_0_0_0_#10b981]"
-                    : "border-transparent hover:bg-slate-800/50 hover:border-border-grid text-slate-300",
+                    ? "bg-[#11161f] border-emerald-500/40 text-white shadow-[inset_2px_0_0_0_#34d399]"
+                    : "border-transparent text-[#8b98a9] hover:bg-[#11161f]/70 hover:text-white",
                 ]}
               >
-                <div class="flex items-center justify-between">
-                  <span
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <svg
                     class:list={[
-                      "text-sm font-medium tracking-tight",
-                      active ? "text-accent-emerald font-semibold" : "group-hover:text-white",
+                      "w-4 h-4 shrink-0",
+                      active ? "text-[#34d399]" : "text-[#8b98a9]",
                     ]}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    stroke-width="1.8"
                   >
-                    {item.label}
-                  </span>
-                  <span
-                    class:list={[
-                      "text-[10px] font-mono px-1.5 py-0.5 rounded border",
-                      active
-                        ? "bg-accent-emerald/20 text-accent-emerald border-accent-emerald/40"
-                        : "bg-slate-900 text-slate-400 border-slate-800",
-                    ]}
-                  >
-                    {item.badge}
-                  </span>
+                    <path stroke-linecap="round" stroke-linejoin="round" d={item.icon} />
+                  </svg>
+                  <span class="pf-nav-label truncate font-medium">{item.label}</span>
                 </div>
-                <div class="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
-                  {item.sub}
-                </div>
+                <span
+                  class:list={[
+                    "pf-nav-label font-mono text-[10px] px-1.5 py-0.5 rounded border tabular-nums shrink-0",
+                    active
+                      ? "bg-emerald-500/15 text-[#34d399] border-emerald-500/30"
+                      : "bg-[#070a0f] text-[#738196] border-[#1b2230]",
+                  ]}
+                >
+                  {item.badge}
+                </span>
               </a>
             );
           })
         }
       </nav>
 
-      <!-- Sidebar Footer: Security Posture -->
-      <div class="p-4 border-t border-border-grid bg-slate-950/50 space-y-2 text-xs font-mono">
-        <div class="flex items-center justify-between text-slate-400">
-          <span>EGRESS PROXY</span>
-          <span class="text-accent-cyan">0.5 req/s</span>
+      <!-- Minimal Sidebar Footer -->
+      <div class="p-2.5 border-t border-[#1b2230] bg-[#070a0f]/60 text-[11px] font-mono space-y-1">
+        <div class="flex items-center justify-between text-[#8b98a9]">
+          <span class="pf-nav-label">MODE</span>
+          <span class="text-[#34d399] font-semibold flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-[#34d399]"></span>
+            <span class="pf-nav-label">FAIL-CLOSED</span>
+          </span>
         </div>
-        <div class="flex items-center justify-between text-slate-400">
-          <span>REDACTION</span>
-          <span class="text-accent-emerald">bounty-safe-v1</span>
-        </div>
-        <div class="flex items-center justify-between text-slate-400">
-          <span>BINDING</span>
-          <span class="text-slate-300">127.0.0.1 ONLY</span>
+        <div class="pf-nav-label flex items-center justify-between text-[#738196]">
+          <span>EGRESS</span>
+          <span class="text-[#22d3ee] tabular-nums">0.50 req/s</span>
         </div>
       </div>
     </aside>
 
-    <!-- Main Content Area -->
-    <div class="flex-1 pl-72 flex flex-col min-h-screen">
-      <!-- Top Status Header -->
-      <header class="sticky top-0 z-20 bg-bg-abyss/90 backdrop-blur-md border-b border-border-grid px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2.5">
-            <span>{title}</span>
-          </h1>
-          {subtitle && <p class="text-xs text-slate-400 font-mono mt-0.5">{subtitle}</p>}
+    <!-- Main Content Column -->
+    <div id="pf-main" class="flex-1 min-w-0 pl-52 flex flex-col min-h-screen transition-all duration-200">
+      <!-- ds41 Minimalist Topbar (h-12) -->
+      <header class="sticky top-0 z-20 h-12 bg-[#070a0f]/90 backdrop-blur-md border-b border-[#1b2230] px-6 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-3 min-w-0 font-mono text-xs">
+          <span class="inline-flex items-center gap-2 font-semibold text-white">
+            <span class="w-2 h-2 rounded-full bg-[#34d399]"></span>
+            <span>pentefino</span>
+          </span>
+          <span class="text-[#263042]">·</span>
+          <span class="text-[#8b98a9] truncate">{title}</span>
+          {
+            subtitle && (
+              <details class="hint">
+                <summary title="Detalhes arquiteturais da página">?</summary>
+                <div>{subtitle}</div>
+              </details>
+            )
+          }
+          <span class="hidden xl:inline text-[#263042]">·</span>
+          <span class="hidden xl:inline text-[#738196] tabular-nums">
+            {templateCountFormatted} templates · PG16 · Valkey 7.2 · bounty-safe-v1
+          </span>
         </div>
 
-        <!-- Live Health Badges -->
-        <div class="flex items-center gap-3 flex-wrap text-xs font-mono">
-          <!-- PostgreSQL 16 Status Badge -->
-          <div
+        <!-- Right Status Pills -->
+        <div class="flex items-center gap-2 font-mono text-[11px] tabular-nums">
+          <span
             class:list={[
-              "px-3 py-1.5 rounded-md border flex items-center gap-2",
+              "pill",
               health.db_connected
-                ? "bg-emerald-950/30 border-accent-emerald/40 text-emerald-300"
-                : "bg-amber-950/30 border-accent-amber/40 text-amber-300",
+                ? "text-[#34d399] border-emerald-500/30"
+                : "text-[#fbbf24] border-amber-500/30",
             ]}
           >
-            <span
-              class:list={[
-                "w-2 h-2 rounded-full",
-                health.db_connected ? "bg-accent-emerald" : "bg-accent-amber animate-ping",
-              ]}
-            ></span>
-            <span>PG16: {health.db_connected ? "ONLINE" : "STANDBY"}</span>
-          </div>
+            <span class="dot"></span>
+            PG16 {health.db_connected ? "ONLINE" : "STANDBY"}
+          </span>
 
-          <!-- Template Catalog Count Badge -->
-          <a
-            href="/templates"
-            class="px-3 py-1.5 rounded-md border border-cyan-500/30 bg-cyan-950/20 text-cyan-300 hover:border-accent-cyan transition flex items-center gap-2"
-          >
-            <span class="text-slate-400">TEMPLATES:</span>
-            <span class="font-bold text-accent-cyan">{templateCountFormatted}</span>
+          <a href="/templates" class="pill hover:border-[#22d3ee]/50 hover:text-white transition">
+            <span>CATALOG</span>
+            <span class="text-[#22d3ee] font-semibold">{templateCountFormatted}</span>
           </a>
 
-          <!-- Egress Proxy Badge -->
           <a
             href="/telemetry"
-            class="px-3 py-1.5 rounded-md border border-emerald-500/40 bg-emerald-950/30 text-accent-emerald font-semibold flex items-center gap-2 shadow-[0_0_12px_rgba(16,185,129,0.12)]"
+            class="pill text-[#34d399] border-emerald-500/30 bg-emerald-950/20 hover:bg-emerald-950/40 transition"
           >
-            <span class="w-2 h-2 rounded-full bg-accent-emerald"></span>
-            <span>FAIL-CLOSED | BOUNTY-SAFE</span>
+            <span class="dot"></span>
+            <span>Egress 0.50 req/s · 0 SSRF</span>
           </a>
         </div>
       </header>
 
       <!-- Page Body -->
-      <main class="flex-1 p-8 max-w-[1600px] w-full mx-auto space-y-6">
+      <main class="flex-1 min-w-0 p-6 max-w-[1640px] w-full mx-auto space-y-5">
         <slot />
       </main>
 
-      <!-- Footer -->
-      <footer class="border-t border-border-grid px-8 py-4 text-xs font-mono text-slate-500 flex items-center justify-between">
-        <div>
-          PenteFino Modular Evidence-Centric Recon & Vulnerability Pipeline • 7-Tier Fail-Closed Scope Engine
-        </div>
-        <div class="flex items-center gap-4">
-          <span>SHA-256 Dual-Hash Evidence</span>
-          <span>•</span>
-          <span>SeaweedFS S3 + Valkey 8 + PostgreSQL 16</span>
-        </div>
+      <!-- Compact Footer -->
+      <footer class="border-t border-[#1b2230] px-6 py-2.5 text-[11px] font-mono text-[#738196] flex items-center justify-between">
+        <span>pentefino · 7-tier fail-closed scope · critical ip invariant</span>
+        <span class="tabular-nums">dual-hash sha256 · seaweedfs s3 · 127.0.0.1</span>
       </footer>
     </div>
+
+    <script is:inline>
+      (function () {
+        const KEY = "pf_sidebar_collapsed";
+        const sidebar = document.getElementById("pf-sidebar");
+        const main = document.getElementById("pf-main");
+        const btn = document.getElementById("pf-sidebar-toggle");
+
+        function applyState(collapsed) {
+          if (!sidebar || !main || !btn) return;
+          if (collapsed) {
+            sidebar.classList.remove("w-52");
+            sidebar.classList.add("w-14");
+            main.classList.remove("pl-52");
+            main.classList.add("pl-14");
+            btn.textContent = "»";
+            document.querySelectorAll(".pf-nav-label").forEach((el) => el.classList.add("hidden"));
+          } else {
+            sidebar.classList.remove("w-14");
+            sidebar.classList.add("w-52");
+            main.classList.remove("pl-14");
+            main.classList.add("pl-52");
+            btn.textContent = "«";
+            document.querySelectorAll(".pf-nav-label").forEach((el) => el.classList.remove("hidden"));
+          }
+        }
+
+        const saved = localStorage.getItem(KEY) === "1";
+        applyState(saved);
+
+        btn?.addEventListener("click", () => {
+          const next = sidebar?.classList.contains("w-52");
+          localStorage.setItem(KEY, next ? "1" : "0");
+          applyState(Boolean(next));
+        });
+      })();
+    </script>
   </body>
 </html>

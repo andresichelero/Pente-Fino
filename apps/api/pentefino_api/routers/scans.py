@@ -139,6 +139,15 @@ async def run_scan(
         session, prog.id, payload.asset_key
     )
 
+    if target_asset.scope_state not in ("in_scope_explicit", "in_scope_derived"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Hard-Gate Fail-Closed: Asset '{target_asset.canonical_key}' has scope_state="
+                f"'{target_asset.scope_state}' and cannot be actively scanned."
+            ),
+        )
+
     planner = DetectionPlanner(db_session=session)
     plan: DetectionPlan = await planner.create_plan(
         asset=target_asset,
@@ -147,6 +156,12 @@ async def run_scan(
         tag_filter=payload.tags,
         max_impact_class=ImpactClass.SAFE_READ_ONLY,
     )
+    if payload.plan_id:
+        try:
+            import uuid as _uuid
+            plan.plan_id = _uuid.UUID(str(payload.plan_id).strip())
+        except Exception:
+            pass
     plan_id_str = str(plan.plan_id)
 
     await scan_hub.broadcast(

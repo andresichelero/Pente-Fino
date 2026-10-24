@@ -10,7 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
 from pentefino_domain.models.audit import AuditEvent
-from pentefino_domain.session import get_async_session
+from pentefino_domain.session import check_db_available, get_async_session
 
 router = APIRouter(tags=["websockets"])
 
@@ -154,15 +154,16 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
             }
         )
 
-        # Query audit count once upon connection for live context
+        # Query audit count once upon connection only if DB is reachable
         audit_count = 0
-        try:
-            async with get_async_session() as session:
-                stmt = select(func.count()).select_from(AuditEvent)
-                res = await session.execute(stmt)
-                audit_count = int(res.scalar_one() or 0)
-        except Exception:
-            audit_count = 0
+        if await check_db_available():
+            try:
+                async with get_async_session() as session:
+                    stmt = select(func.count()).select_from(AuditEvent)
+                    res = await session.execute(stmt)
+                    audit_count = int(res.scalar_one() or 0)
+            except Exception:
+                audit_count = 0
 
         await websocket.send_json(
             {

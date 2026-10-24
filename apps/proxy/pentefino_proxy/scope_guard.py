@@ -120,6 +120,8 @@ class ScopeGuard:
 
         # Primary Scope Engine evaluation
         decision = engine.evaluate_target(target)
+        if decision.allowed and not decision.resolved_ip and target.resolved_ips:
+            decision.resolved_ip = str(target.resolved_ips[0])
         return decision
 
     def enforce(

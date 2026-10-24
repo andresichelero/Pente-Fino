@@ -57,6 +57,7 @@ class HardenedNucleiRunner:
             "-u",
             target,
             "-jsonl",
+            "-irr",
             "-o",
             "/tmp/nuclei_output.json",
             "-silent",

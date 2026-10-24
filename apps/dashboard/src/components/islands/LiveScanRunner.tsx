@@ -9,6 +9,8 @@ export interface LiveScanRunnerProps {
   wsBaseUrl?: string;
 }
 
+const ALL_SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
+
 export default function LiveScanRunner({
   programs = [],
   initialSlug = "",
@@ -24,7 +26,13 @@ export default function LiveScanRunner({
   const [assetKey, setAssetKey] = useState<string>(
     initialAssets[0]?.canonical_key ?? "scanme.nmap.org"
   );
-  const [severityFilter, setSeverityFilter] = useState<string>("critical,high,medium,low,info");
+  const [selectedSeverities, setSelectedSeverities] = useState<string[]>([
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "info",
+  ]);
   const [tagsFilter, setTagsFilter] = useState<string>("");
   const [runMode, setRunMode] = useState<"auto" | "dry_run">("auto");
 
@@ -34,17 +42,18 @@ export default function LiveScanRunner({
 
   // Stage 2: Scan Execution & WebSocket console state
   const [runningScan, setRunningScan] = useState<boolean>(false);
+  const [scanProgress, setScanProgress] = useState<number>(0);
   const [scanResult, setScanResult] = useState<any | null>(null);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
     "[SYSTEM] Console de Execução Efêmera PenteFino pronto.",
-    "[SYSTEM] Hard-gate de segurança: Somente templates SAFE_READ_ONLY + Tráfego via Egress Proxy (127.0.0.1:8080).",
+    "[SYSTEM] Hard-gate: Somente templates SAFE_READ_ONLY + Egress Proxy (127.0.0.1:8080).",
   ]);
   const [history, setHistory] = useState<any[]>(scanHistory);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const terminalEndRef = useRef<HTMLDivElement | null>(null);
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Read URL query params (?program=...&asset=...) on mount if present
+  // Read URL query params (?program=...&asset=...) on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
@@ -57,9 +66,23 @@ export default function LiveScanRunner({
 
   useEffect(() => {
     if (programSlug) {
+      if (
+        programSlug === initialSlug &&
+        initialAssets &&
+        initialAssets.length > 0
+      ) {
+        return;
+      }
       fetchProgramAssets(programSlug);
     }
   }, [programSlug]);
+
+  // Auto-scroll terminal container on new logs
+  useEffect(() => {
+    if (terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
+    }
+  }, [terminalLogs]);
 
   useEffect(() => {
     return () => {
@@ -72,6 +95,15 @@ export default function LiveScanRunner({
   function appendLog(line: string) {
     const ts = new Date().toISOString().split("T")[1].slice(0, 8);
     setTerminalLogs((prev) => [...prev, `[${ts}] ${line}`]);
+  }
+
+  function toggleSeverity(sev: string) {
+    setSelectedSeverities((prev) => {
+      if (prev.includes(sev)) {
+        return prev.length > 1 ? prev.filter((s) => s !== sev) : prev;
+      }
+      return [...prev, sev];
+    });
   }
 
   async function fetchProgramAssets(slug: string) {
@@ -107,7 +139,10 @@ export default function LiveScanRunner({
     if (e) e.preventDefault();
     if (!programSlug || !assetKey.trim()) return;
     setPlanning(true);
-    appendLog(`[STAGE-1] Iniciando DetectionPlanner cirúrgico para '${assetKey.trim()}' (${programSlug})...`);
+    setScanResult(null);
+    setScanProgress(25);
+    const sevString = selectedSeverities.join(",");
+    appendLog(`[STAGE-1] DetectionPlanner cirúrgico → '${assetKey.trim()}' (${programSlug}) [sev=${sevString}]`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/scans/plan`, {
@@ -116,20 +151,21 @@ export default function LiveScanRunner({
         body: JSON.stringify({
           program_slug: programSlug,
           asset_key: assetKey.trim(),
-          severity: severityFilter.trim() || null,
+          severity: sevString || null,
           tags: tagsFilter.trim() || null,
         }),
       });
       if (res.ok) {
         const data = await res.json();
         setPlanResult(data);
+        setScanProgress(50);
         appendLog(
-          `[PLANNER] Tecnologias brutas: [${(data.raw_detected_technologies || []).join(", ")}] | CDN/WAF Podadas: [${(
+          `[PLANNER] Raw tech: [${(data.raw_detected_technologies || []).join(", ")}] | CDN Pruned: [${(
             data.pruned_edge_tags || []
           ).join(", ")}]`
         );
         appendLog(
-          `[PLANNER] Plano #${String(data.plan_id).slice(0, 8)} gerado: ${data.total_templates} templates SAFE_READ_ONLY selecionados.`
+          `[PLANNER] plan_id=${data.plan_id} → ${data.total_templates} templates SAFE_READ_ONLY selecionados.`
         );
         setPlanning(false);
         return;
@@ -167,45 +203,50 @@ export default function LiveScanRunner({
       ],
     };
     setPlanResult(fallbackPlan);
+    setScanProgress(50);
     appendLog(
-      `[PLANNER] CDN/WAF Podadas: [cloudflare] | Tecnologias Alvo: [apache, openssh] -> 378 templates safe_read_only.`
+      `[PLANNER] CDN Pruned: [cloudflare] | Matched: [apache, openssh] -> 378 templates safe_read_only.`
     );
     setPlanning(false);
   }
 
-  // Stage 2: Connect WebSocket & Execute Scan
+  // Stage 2: Connect WebSocket with SAME plan_id & Execute Scan
   async function handleRunScan() {
     const activePlanId = planResult?.plan_id || "live-plan-" + Date.now();
+    const sevString = selectedSeverities.join(",");
     setRunningScan(true);
     setScanResult(null);
+    setScanProgress(65);
 
-    // Connect to WebSocket `/ws/scans/${planId}`
     try {
       if (wsRef.current) {
         wsRef.current.close();
       }
       const wsUrl = `${wsBaseUrl}/ws/scans/${activePlanId}`;
-      appendLog(`[WS] Conectando ao stream em tempo real: ${wsUrl}`);
+      appendLog(`[WS] Conectando ao stream: ${wsUrl}`);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        appendLog(`[WS] Canal de telemetria estabelecido para plan_id=${activePlanId}.`);
+        appendLog(`[WS] Canal estabelecido para plan_id=${activePlanId}`);
       };
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (typeof msg.progress === "number") {
+            setScanProgress(Math.max(50, Math.min(100, msg.progress)));
+          }
           if (msg.line || msg.message) {
             appendLog(`[RUNNER] ${msg.line || msg.message}`);
-          } else {
-            appendLog(`[EVENT] ${JSON.stringify(msg)}`);
+          } else if (msg.stage) {
+            appendLog(`[STAGE:${String(msg.stage).toUpperCase()}] progress=${msg.progress ?? 0}%`);
           }
         } catch {
           appendLog(`[STREAM] ${event.data}`);
         }
       };
     } catch {
-      appendLog(`[WS] Aviso: WebSocket indisponível, exibindo logs via resposta HTTP.`);
+      appendLog(`[WS] WebSocket offline — exibindo telemetria via resposta HTTP.`);
     }
 
     appendLog(
@@ -217,9 +258,10 @@ export default function LiveScanRunner({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          plan_id: activePlanId,
           program_slug: programSlug,
           asset_key: assetKey.trim(),
-          severity: severityFilter.trim() || null,
+          severity: sevString || null,
           tags: tagsFilter.trim() || null,
           mode: runMode,
         }),
@@ -227,15 +269,14 @@ export default function LiveScanRunner({
       if (res.ok) {
         const data = await res.json();
         setScanResult(data);
+        setScanProgress(100);
         appendLog(
-          `[RUNNER] Status: ${data.status.toUpperCase()} | Modo executado: ${data.mode_executed} | Templates: ${data.total_templates}`
+          `[RUNNER] Status: ${data.status.toUpperCase()} | Mode: ${data.mode_executed} | Templates: ${data.total_templates}`
         );
         if (data.message) {
           appendLog(`[INFO] ${data.message}`);
         }
-        appendLog(
-          `[DEDUP] Varredura concluída. Findings gerados/atualizados: ${data.findings_count ?? 0}.`
-        );
+        appendLog(`[DEDUP] Findings gerados/atualizados: ${data.findings_count ?? 0}.`);
         await fetchHistory();
         setRunningScan(false);
         return;
@@ -244,9 +285,8 @@ export default function LiveScanRunner({
       // Fallback dry-run log output
     }
 
-    appendLog(
-      `[FALLBACK] Docker Desktop offline ou modo dry_run selecionado — executado em modo Dry-Run seguro.`
-    );
+    appendLog(`[FALLBACK] Docker offline ou dry_run — executado em modo Dry-Run seguro.`);
+    setScanProgress(100);
     setScanResult({
       plan_id: activePlanId,
       program_slug: programSlug,
@@ -256,48 +296,58 @@ export default function LiveScanRunner({
       mode_executed: "dry_run",
       total_templates: planResult?.total_templates || 378,
       findings_count: 0,
-      message: "Dry-Run concluído com sucesso (Container efêmero validado: --read-only --cap-drop ALL).",
+      message: "Dry-Run concluído (--read-only --cap-drop ALL).",
     });
     setRunningScan(false);
   }
 
-  return (
-    <div class="space-y-6 text-slate-100">
-      {/* Control Header */}
-      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-4">
-          <div class="flex items-center gap-3">
-            <div class="h-10 w-10 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold font-mono">
-              D2
-            </div>
-            <div>
-              <h2 class="text-base font-semibold text-slate-100">
-                Orquestrador Cirúrgico de Varredura (`DetectionPlanner` + `EphemeralRunner`)
-              </h2>
-              <p class="text-xs text-slate-400">
-                Fluxo em 2 estágios: Podagem de CDN/WAF + Seleção `safe_read_only` → Container Efêmero Isolado via Proxy
-              </p>
-            </div>
-          </div>
+  const stageLabel = runningScan
+    ? "STAGE 2: EXECUTING EPHEMERAL CONTAINER"
+    : scanResult
+    ? "COMPLETED · E2 DEDUP SYNCED"
+    : planning
+    ? "STAGE 1: COMPUTING SURGICAL PLAN"
+    : planResult
+    ? "STAGE 1 READY · AWAITING EXECUTION"
+    : "IDLE · SELECT TARGET & SIMULATE PLAN";
 
+  return (
+    <div class="space-y-3">
+      {/* Hero Strip Progress Bar (ds41 style) */}
+      <div class="card card-pad">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div class="flex items-center gap-2">
-            <span class="px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-xs">
-              Impact Gate: SAFE_READ_ONLY
+            <span class="pill pill-emerald">[DetectionPlanner → HardenedNucleiRunner]</span>
+            <span class="text-xs font-mono font-semibold text-[#e6edf3]">
+              {assetKey || "scanme.nmap.org"}
             </span>
-            <span class="px-2.5 py-1 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-xs">
-              Proxy: 127.0.0.1:8080
-            </span>
+            <span class="text-[11px] font-mono text-[#7d8590]">({programSlug})</span>
+          </div>
+          <div class="flex items-center gap-2 text-[11px] font-mono num">
+            <span class="pill pill-cyan">{stageLabel}</span>
+            {planResult && (
+              <span class="pill pill-neutral">{planResult.total_templates} safe_read_only</span>
+            )}
+            <span class="text-[#10b981] font-bold">{scanProgress}%</span>
           </div>
         </div>
+        <div class="bar-track">
+          <div
+            class={`bar-fill ${runningScan ? "bar-fill-cyan" : "bar-fill-emerald"}`}
+            style={{ width: `${scanProgress}%` }}
+          />
+        </div>
+      </div>
 
-        {/* Target & Filter Inputs */}
-        <form onSubmit={handleSimulatePlan} class="grid grid-cols-1 md:grid-cols-12 gap-3 pt-2 border-t border-slate-800">
+      {/* Target & Filter Bar */}
+      <form onSubmit={handleSimulatePlan} class="card card-pad space-y-3">
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
           <div class="md:col-span-3">
-            <label class="block text-[11px] text-slate-400 font-mono mb-1">Programa</label>
+            <label class="kpi-label block mb-1">Program</label>
             <select
               value={programSlug}
               onChange={(e) => setProgramSlug((e.target as HTMLSelectElement).value)}
-              class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+              class="input"
             >
               {programs.length === 0 ? (
                 <option value={programSlug}>{programSlug}</option>
@@ -312,14 +362,14 @@ export default function LiveScanRunner({
           </div>
 
           <div class="md:col-span-3">
-            <label class="block text-[11px] text-slate-400 font-mono mb-1">Ativo Alvo (Canonical Key)</label>
+            <label class="kpi-label block mb-1">Target Canonical Key</label>
             <input
               type="text"
               list="scoped-assets-datalist"
               value={assetKey}
               onInput={(e) => setAssetKey((e.target as HTMLInputElement).value)}
               placeholder="scanme.nmap.org"
-              class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+              class="input"
               required
             />
             <datalist id="scoped-assets-datalist">
@@ -330,155 +380,190 @@ export default function LiveScanRunner({
           </div>
 
           <div class="md:col-span-2">
-            <label class="block text-[11px] text-slate-400 font-mono mb-1">Severidades</label>
+            <label class="kpi-label block mb-1">Extra Tags (opt)</label>
             <input
               type="text"
-              value={severityFilter}
-              onInput={(e) => setSeverityFilter((e.target as HTMLInputElement).value)}
-              placeholder="critical,high,medium"
-              class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
+              value={tagsFilter}
+              onInput={(e) => setTagsFilter((e.target as HTMLInputElement).value)}
+              placeholder="cve,exposure,misconfig"
+              class="input"
             />
           </div>
 
           <div class="md:col-span-2">
-            <label class="block text-[11px] text-slate-400 font-mono mb-1">Modo do Runner</label>
-            <select
-              value={runMode}
-              onChange={(e) => setRunMode((e.target as HTMLSelectElement).value as "auto" | "dry_run")}
-              class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono"
-            >
-              <option value="auto">auto (Docker / Fallback)</option>
-              <option value="dry_run">dry_run (Simulação)</option>
-            </select>
-          </div>
-
-          <div class="md:col-span-2 flex items-end">
-            <button
-              type="submit"
-              disabled={planning}
-              class="w-full bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 font-bold text-xs py-2 px-3 rounded-lg transition font-mono uppercase"
-            >
-              {planning ? "Calculando..." : "1. Simular Plano"}
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {/* Two-Stage Main Grid */}
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Stage 1: DetectionPlan Results & Selected Templates Table (6 cols) */}
-        <div class="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
-          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div>
-              <span class="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
-                Estágio 1 — DetectionPlanner
-              </span>
-              <h3 class="text-sm font-semibold text-slate-100">
-                Plano Cirúrgico de Templates (`safe_read_only`)
-              </h3>
-            </div>
-            {planResult && (
-              <span class="px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs">
-                {planResult.total_templates} templates
-              </span>
-            )}
-          </div>
-
-          {!planResult ? (
-            <div class="py-12 text-center space-y-3">
-              <p class="text-xs text-slate-400">
-                Clique em <strong>"1. Simular Plano"</strong> para executar o `DetectionPlanner` contra as tecnologias detectadas no ativo.
-              </p>
+            <label class="kpi-label block mb-1">Execution Mode</label>
+            <div class="seg w-full flex">
               <button
                 type="button"
-                onClick={() => handleSimulatePlan()}
-                class="bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 px-4 py-2 rounded-lg text-xs font-mono"
+                onClick={() => setRunMode("auto")}
+                class={`seg-btn flex-1 ${runMode === "auto" ? "active" : ""}`}
               >
-                Gerar Plano de Detecção Agora
+                auto
+              </button>
+              <button
+                type="button"
+                onClick={() => setRunMode("dry_run")}
+                class={`seg-btn flex-1 ${runMode === "dry_run" ? "active" : ""}`}
+              >
+                dry_run
               </button>
             </div>
-          ) : (
-            <div class="space-y-4">
-              {/* Technology & Pruned CDN Comparison */}
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
-                  <span class="text-[10px] font-mono uppercase text-slate-400 block mb-1.5">
-                    Stack de Aplicação Alvo (Matched):
-                  </span>
-                  <div class="flex flex-wrap gap-1.5">
-                    {(planResult.matched_technologies || []).length === 0 ? (
-                      <span class="text-slate-500 font-mono text-[11px]">Baseline Genérico</span>
-                    ) : (
-                      planResult.matched_technologies.map((tech: string) => (
-                        <span
-                          key={tech}
-                          class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono text-[11px]"
-                        >
-                          {tech}
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </div>
+          </div>
 
-                <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
-                  <span class="text-[10px] font-mono uppercase text-amber-400 block mb-1.5">
-                    Tags de CDN/WAF Podadas (`pruned_edge_tags`):
+          <div class="md:col-span-2">
+            <button type="submit" disabled={planning} class="btn btn-cyan w-full">
+              {planning ? "Planning..." : "1. Simulate Plan"}
+            </button>
+          </div>
+        </div>
+
+        {/* Multi-toggle Severity Pills */}
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#1b2230]">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="kpi-label mr-1">Severities:</span>
+            {ALL_SEVERITIES.map((sev) => {
+              const active = selectedSeverities.includes(sev);
+              const colorCls =
+                sev === "critical" || sev === "high"
+                  ? active
+                    ? "pill-red"
+                    : "pill-neutral opacity-50"
+                  : sev === "medium"
+                  ? active
+                    ? "pill-amber"
+                    : "pill-neutral opacity-50"
+                  : active
+                  ? "pill-cyan"
+                  : "pill-neutral opacity-50";
+              return (
+                <button
+                  key={sev}
+                  type="button"
+                  onClick={() => toggleSeverity(sev)}
+                  class={`pill cursor-pointer transition ${colorCls}`}
+                >
+                  {active ? "✓ " : ""}
+                  {sev}
+                </button>
+              );
+            })}
+          </div>
+          <div class="flex items-center gap-1.5 text-[10px] font-mono text-[#7d8590]">
+            <span>Hard-Gate:</span>
+            <span class="pill pill-emerald">SAFE_READ_ONLY</span>
+            <span class="pill pill-cyan">Proxy 127.0.0.1:8080</span>
+          </div>
+        </div>
+      </form>
+
+      {/* Two-Stage Main Grid */}
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+        {/* Stage 1: DetectionPlan Results & Selected Templates Table */}
+        <div class="lg:col-span-6 card flex flex-col justify-between">
+          <div>
+            <div class="px-3.5 py-2.5 border-b border-[#1b2230] flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="kpi-label text-[#06b6d4]">STAGE 1 · DETECTION PLANNER</span>
+                {planResult && (
+                  <span class="text-[10px] font-mono text-[#7d8590]">
+                    #{String(planResult.plan_id).slice(0, 12)}
                   </span>
-                  <div class="flex flex-wrap gap-1.5">
-                    {(planResult.pruned_edge_tags || []).length === 0 ? (
-                      <span class="text-slate-500 font-mono text-[11px]">Nenhuma CDN detectada</span>
-                    ) : (
-                      planResult.pruned_edge_tags.map((cdn: string) => (
-                        <span
-                          key={cdn}
-                          class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono text-[11px] line-through"
-                        >
-                          {cdn} [PRUNED]
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </div>
+                )}
               </div>
+              {planResult && (
+                <span class="pill pill-emerald num">{planResult.total_templates} templates</span>
+              )}
+            </div>
 
-              {/* Scrollable Table of Selected Templates */}
-              <div class="border border-slate-800 rounded-lg overflow-hidden">
-                <div class="bg-slate-950 px-3 py-2 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400">
-                  <span>Templates Selecionados ({planResult.selected_templates?.length || 0} exibidos de {planResult.total_templates})</span>
-                  <span class="text-emerald-400">100% safe_read_only</span>
+            {!planResult ? (
+              <div class="p-8 text-center space-y-2.5">
+                <p class="text-xs font-mono text-[#7d8590]">
+                  Clique em <strong class="text-[#e6edf3]">1. Simulate Plan</strong> para podar tags de CDN/WAF e filtrar templates <code class="text-[#10b981]">safe_read_only</code>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleSimulatePlan()}
+                  class="btn btn-ghost"
+                >
+                  Executar DetectionPlanner Agora
+                </button>
+              </div>
+            ) : (
+              <div class="p-3.5 space-y-3">
+                {/* Matched Tech vs Pruned CDN */}
+                <div class="grid grid-cols-2 gap-2.5">
+                  <div class="bg-[#070a0f] border border-[#1b2230] rounded p-2.5">
+                    <span class="kpi-label block mb-1.5">Matched App Stack</span>
+                    <div class="flex flex-wrap gap-1">
+                      {(planResult.matched_technologies || []).length === 0 ? (
+                        <span class="text-[11px] font-mono text-[#7d8590]">generic-baseline</span>
+                      ) : (
+                        planResult.matched_technologies.map((tech: string) => (
+                          <span key={tech} class="pill pill-cyan">
+                            {tech}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div class="bg-[#070a0f] border border-[#1b2230] rounded p-2.5">
+                    <span class="kpi-label text-[#f59e0b] block mb-1.5">CDN / WAF Pruned</span>
+                    <div class="flex flex-wrap gap-1">
+                      {(planResult.pruned_edge_tags || []).length === 0 ? (
+                        <span class="text-[11px] font-mono text-[#7d8590]">none</span>
+                      ) : (
+                        planResult.pruned_edge_tags.map((cdn: string) => (
+                          <span key={cdn} class="pill pill-amber line-through">
+                            {cdn}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div class="max-h-72 overflow-y-auto">
-                  <table class="w-full text-left border-collapse text-xs">
-                    <thead class="bg-slate-950/90 text-slate-400 font-mono text-[10px] uppercase sticky top-0">
+
+                {/* Selected Templates Table */}
+                <div class="border border-[#1b2230] rounded overflow-hidden max-h-64 overflow-y-auto">
+                  <table class="dtable num">
+                    <thead>
                       <tr>
-                        <th class="py-2 px-3">Template ID</th>
-                        <th class="py-2 px-3">Severidade</th>
-                        <th class="py-2 px-3">CVE</th>
-                        <th class="py-2 px-3">Tech</th>
+                        <th>Template ID</th>
+                        <th>Severity</th>
+                        <th>CVE</th>
+                        <th>Tech</th>
                       </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-800/60">
+                    <tbody>
                       {(planResult.selected_templates || []).map((tpl: any) => (
-                        <tr key={tpl.id} class="hover:bg-slate-800/40">
-                          <td class="py-2 px-3 font-mono text-[11px] text-slate-200">
-                            <div class="font-semibold text-cyan-300 truncate max-w-[230px]" title={tpl.id}>
+                        <tr key={tpl.id}>
+                          <td>
+                            <div
+                              class="text-[#06b6d4] font-semibold truncate max-w-[220px]"
+                              title={tpl.id}
+                            >
                               {tpl.id}
                             </div>
-                            <div class="text-[10px] text-slate-400 truncate max-w-[230px]">
+                            <div class="text-[10px] text-[#7d8590] truncate max-w-[220px]">
                               {tpl.name}
                             </div>
                           </td>
-                          <td class="py-2 px-3 font-mono text-[10px] uppercase">
-                            <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">
+                          <td>
+                            <span
+                              class={`pill ${
+                                tpl.severity === "critical" || tpl.severity === "high"
+                                  ? "pill-red"
+                                  : tpl.severity === "medium"
+                                  ? "pill-amber"
+                                  : "pill-neutral"
+                              }`}
+                            >
                               {tpl.severity || "info"}
                             </span>
                           </td>
-                          <td class="py-2 px-3 font-mono text-[11px] text-amber-300">
-                            {tpl.cve_id || "—"}
-                          </td>
-                          <td class="py-2 px-3 font-mono text-[10px] text-slate-400">
-                            {(tpl.technologies || []).slice(0, 2).join(", ")}
+                          <td class="text-[#f59e0b]">{tpl.cve_id || "—"}</td>
+                          <td class="text-[#7d8590]">
+                            {(tpl.technologies || []).slice(0, 2).join(", ") || "baseline"}
                           </td>
                         </tr>
                       ))}
@@ -486,97 +571,114 @@ export default function LiveScanRunner({
                   </table>
                 </div>
               </div>
+            )}
+          </div>
 
+          {planResult && (
+            <div class="p-3.5 border-t border-[#1b2230]">
               <button
                 type="button"
                 disabled={runningScan}
                 onClick={handleRunScan}
-                class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-slate-950 font-bold text-xs py-3 rounded-lg transition font-mono uppercase tracking-wider shadow-lg"
+                class="btn btn-primary w-full py-2"
               >
                 {runningScan
-                  ? "Executando Container Efêmero..."
-                  : `2. Executar Varredura Cirúrgica (${planResult.total_templates} Templates)`}
+                  ? "Running Ephemeral Container..."
+                  : `2. Execute Surgical Scan (${planResult.total_templates} Templates)`}
               </button>
             </div>
           )}
         </div>
 
-        {/* Stage 2: Live WebSocket Execution Terminal & Audit History (6 cols) */}
-        <div class="lg:col-span-6 space-y-6">
-          <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg flex flex-col">
-            <div class="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+        {/* Stage 2: Live WebSocket Execution Terminal & Audit History */}
+        <div class="lg:col-span-6 space-y-3">
+          <div class="card overflow-hidden flex flex-col">
+            <div class="px-3.5 py-2.5 border-b border-[#1b2230] flex items-center justify-between bg-[#070a0f]">
               <div class="flex items-center gap-2">
-                <span class="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="text-xs font-mono font-semibold text-slate-200">
-                  Estágio 2 — Console WebSocket (`/ws/scans/{planResult?.plan_id ? String(planResult.plan_id).slice(0, 8) : "live"}`)
+                <span class="h-2 w-2 rounded-full bg-[#10b981] animate-pulse" />
+                <span class="kpi-label text-[#e6edf3]">
+                  STAGE 2 · LIVE STREAM (/ws/scans/
+                  {planResult?.plan_id ? String(planResult.plan_id).slice(0, 10) : "live"})
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setTerminalLogs(["[SYSTEM] Console limpo."])}
-                class="text-[11px] font-mono text-slate-400 hover:text-slate-200"
+                class="text-[10px] font-mono text-[#7d8590] hover:text-[#e6edf3]"
               >
-                Limpar Console
+                Clear
               </button>
             </div>
 
-            <div class="p-4 bg-slate-950 font-mono text-xs text-emerald-300 space-y-1.5 h-80 overflow-y-auto">
+            <div
+              ref={terminalContainerRef}
+              class="p-3 bg-[#05070b] font-mono text-[11px] space-y-1 h-64 overflow-y-auto num"
+            >
               {terminalLogs.map((log, i) => (
                 <div
                   key={i}
                   class={
                     log.includes("[PLANNER]")
-                      ? "text-cyan-300"
+                      ? "text-[#06b6d4]"
                       : log.includes("[CONTAINER]")
-                      ? "text-amber-300"
+                      ? "text-[#f59e0b]"
                       : log.includes("[FALLBACK]")
-                      ? "text-purple-300"
-                      : "text-emerald-300"
+                      ? "text-[#a855f7]"
+                      : "text-[#10b981]"
                   }
                 >
                   {log}
                 </div>
               ))}
-              <div ref={terminalEndRef} />
             </div>
 
             {scanResult && (
-              <div class="p-3 bg-emerald-950/30 border-t border-emerald-500/30 flex items-center justify-between text-xs font-mono">
-                <span class="text-emerald-300">
+              <div class="px-3.5 py-2 bg-[#10b981]/10 border-t border-[#10b981]/30 flex items-center justify-between text-xs font-mono">
+                <span class="text-[#10b981]">
                   Status: <strong>{scanResult.status}</strong> ({scanResult.mode_executed})
                 </span>
-                <a
-                  href="/findings"
-                  class="text-cyan-300 hover:underline font-semibold"
-                >
-                  Inspecionar Findings ({scanResult.findings_count ?? 0}) →
+                <a href="/findings" class="text-[#06b6d4] hover:underline font-semibold">
+                  Inspect Findings ({scanResult.findings_count ?? 0}) →
                 </a>
               </div>
             )}
           </div>
 
           {/* Recent Scan Audit Trail */}
-          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
-            <h4 class="text-xs font-mono uppercase tracking-wider text-slate-400 mb-3">
-              Histórico de Execuções (`AuditEvent`)
-            </h4>
-            <div class="space-y-2 max-h-40 overflow-y-auto text-xs font-mono">
-              {history.length === 0 ? (
-                <div class="text-slate-500 py-2">Nenhum evento de varredura registrado ainda.</div>
-              ) : (
-                history.slice(0, 6).map((h) => (
-                  <div
-                    key={h.sequence}
-                    class="flex items-center justify-between bg-slate-950 px-3 py-2 rounded border border-slate-800/80"
-                  >
-                    <span class="text-cyan-300">
-                      #{h.sequence} {h.event_type}
-                    </span>
-                    <span class="text-slate-400">{h.object_id}</span>
-                    <span class="text-slate-500 text-[10px]">{h.occurred_at?.slice(0, 19)}</span>
-                  </div>
-                ))
-              )}
+          <div class="card overflow-hidden">
+            <div class="px-3.5 py-2 border-b border-[#1b2230] flex items-center justify-between">
+              <span class="kpi-label">RECENT SCAN AUDIT TRAIL</span>
+              <span class="text-[10px] font-mono text-[#7d8590] num">{history.length} events</span>
+            </div>
+            <div class="max-h-36 overflow-y-auto">
+              <table class="dtable num">
+                <thead>
+                  <tr>
+                    <th>Seq</th>
+                    <th>Event Type</th>
+                    <th>Object</th>
+                    <th class="text-right">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} class="text-center text-[#7d8590] py-3">
+                        No scan events recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    history.slice(0, 6).map((h) => (
+                      <tr key={h.sequence}>
+                        <td class="text-[#06b6d4]">#{h.sequence}</td>
+                        <td>{h.event_type}</td>
+                        <td class="text-[#7d8590]">{h.object_id}</td>
+                        <td class="text-right text-[#7d8590]">{h.occurred_at?.slice(0, 19)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

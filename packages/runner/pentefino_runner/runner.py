@@ -136,7 +136,7 @@ class EphemeralRunner:
 
             try:
                 await asyncio.wait_for(read_tasks, timeout=1.0)
-            except (asyncio.TimeoutError, Exception):
+            except BaseException:
                 pass
 
             if raise_on_timeout:

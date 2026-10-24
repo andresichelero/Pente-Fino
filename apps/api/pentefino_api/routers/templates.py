@@ -54,6 +54,8 @@ async def get_template_stats(
 async def list_templates(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    page: Optional[int] = Query(None, ge=1, description="1-based page index"),
+    page_size: Optional[int] = Query(None, ge=1, le=500, description="Page size"),
     impact_class: Optional[str] = Query(None, description="Filter by impact_class"),
     severity: Optional[str] = Query(None, description="Filter by severity"),
     tech: Optional[str] = Query(None, description="Filter by technology or tag"),
@@ -62,6 +64,10 @@ async def list_templates(
     session: AsyncSession = Depends(get_db_session),
 ) -> TemplateListResponse:
     """Paginated template catalog query using native SQL filtering."""
+    effective_limit = page_size if page_size is not None else limit
+    effective_page = page if page is not None else (offset // max(1, effective_limit)) + 1
+    effective_offset = (page - 1) * effective_limit if page is not None else offset
+
     filters = []
 
     if impact_class:
@@ -104,7 +110,7 @@ async def list_templates(
     stmt = select(TemplateCatalog)
     if filters:
         stmt = stmt.where(*filters)
-    stmt = stmt.order_by(TemplateCatalog.id.asc()).offset(offset).limit(limit)
+    stmt = stmt.order_by(TemplateCatalog.id.asc()).offset(effective_offset).limit(effective_limit)
 
     res = await session.execute(stmt)
     templates = res.scalars().all()
@@ -114,6 +120,7 @@ async def list_templates(
             id=t.id,
             name=t.name,
             protocol=t.protocol,
+            http_methods=list(t.http_methods) if t.http_methods else None,
             impact_class=t.impact_class,
             severity=t.severity or "info",
             cve_id=t.cve_id,
@@ -122,11 +129,20 @@ async def list_templates(
             tags=list(t.tags or []),
             upstream_revision=t.upstream_revision,
             bundle_hash=t.bundle_hash.strip(),
+            raw_yaml=t.raw_yaml,
+            updated_at=t.updated_at.isoformat() if t.updated_at else None,
         )
         for t in templates
     ]
 
-    return TemplateListResponse(total=total, items=items)
+    total_pages = max(1, (total + effective_limit - 1) // effective_limit)
+    return TemplateListResponse(
+        total=total,
+        page=effective_page,
+        page_size=effective_limit,
+        total_pages=total_pages,
+        items=items,
+    )
 
 
 @router.get("/{template_id:path}", response_model=TemplateDetailResponse)
