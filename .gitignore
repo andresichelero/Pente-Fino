@@ -1,0 +1,68 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+**/.venv/
+venv/
+ENV/
+env/
+
+# Testing & Static Analysis Caches
+.pytest_cache/
+**/.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime Storage, Cloned Upstream Templates & Logs
+storage/
+logs/
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Node / Astro Frontend (Phase 5)
+node_modules/
+**/node_modules/
+.astro/
+**/.astro/
+
+# Agent Scratch & Local Planning Docs
+.agents/
+*.docx
+*.pdf
+deep-research-report.md
+plano-revisado-validado.md
+PROJECT.md
+
+# OS / IDE Metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

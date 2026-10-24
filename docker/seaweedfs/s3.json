@@ -1,0 +1,25 @@
+{
+  "identities": [
+    {
+      "name": "pentefino",
+      "credentials": [
+        {
+          "accessKey": "pentefino_s3_admin",
+          "secretKey": "pentefino_s3_secret"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging",
+        "Admin:evidence",
+        "Read:evidence",
+        "Write:evidence",
+        "List:evidence",
+        "Tagging:evidence"
+      ]
+    }
+  ]
+}
