@@ -1,0 +1,331 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { fetchTemplates, fetchTemplateStats } from "../lib/api";
+
+const url = Astro.url;
+const impactClass = url.searchParams.get("impact_class") || "";
+const severity = url.searchParams.get("severity") || "";
+const tech = url.searchParams.get("tech") || "";
+const protocol = url.searchParams.get("protocol") || "";
+const q = url.searchParams.get("q") || "";
+const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+const pageSize = 25;
+
+const [stats, pageData] = await Promise.all([
+  fetchTemplateStats(),
+  fetchTemplates({
+    impact_class: impactClass,
+    severity,
+    tech,
+    protocol,
+    q,
+    page,
+    page_size: pageSize,
+  }),
+]);
+
+function buildPageUrl(targetPage: number): string {
+  const params = new URLSearchParams(url.searchParams);
+  params.set("page", String(targetPage));
+  return `/templates?${params.toString()}`;
+}
+
+function impactBadgeClass(ic: string): string {
+  switch (ic) {
+    case "safe_read_only":
+    case "passive":
+      return "bg-emerald-500/15 text-accent-emerald border-emerald-500/30";
+    case "active_reviewed":
+      return "bg-cyan-500/15 text-accent-cyan border-cyan-500/30";
+    case "stateful":
+      return "bg-amber-500/15 text-accent-amber border-amber-500/30";
+    case "intrusive":
+      return "bg-red-500/15 text-accent-crimson border-red-500/30";
+    case "lab_only":
+    default:
+      return "bg-purple-500/15 text-purple-300 border-purple-500/30";
+  }
+}
+
+function severityBadgeClass(sev?: string | null): string {
+  switch ((sev || "").toLowerCase()) {
+    case "critical":
+      return "bg-red-500/20 text-red-300 border-red-500/40";
+    case "high":
+      return "bg-orange-500/20 text-orange-300 border-orange-500/40";
+    case "medium":
+      return "bg-amber-500/20 text-amber-300 border-amber-500/40";
+    case "low":
+      return "bg-cyan-500/20 text-cyan-300 border-cyan-500/40";
+    default:
+      return "bg-slate-800 text-slate-300 border-slate-700";
+  }
+}
+---
+
+<BaseLayout
+  title="Catálogo Indexado de Templates Nuclei"
+  subtitle={`Explorador SSR • ${(stats.total || 14107).toLocaleString("pt-BR")} Templates Classificados por AST e Hash SHA-256`}
+  activeNav="templates"
+>
+  <!-- Impact Class Summary Pills -->
+  <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <a
+      href="/templates"
+      class:list={[
+        "p-3.5 rounded-xl border transition font-mono",
+        !impactClass
+          ? "bg-emerald-950/30 border-accent-emerald text-white"
+          : "bg-bg-panel border-border-grid text-slate-300 hover:border-slate-700",
+      ]}
+    >
+      <div class="text-[10px] uppercase text-slate-400">TODOS OS TEMPLATES</div>
+      <div class="text-xl font-bold mt-1">{(stats.total || 14107).toLocaleString("en-US")}</div>
+    </a>
+
+    {
+      ["safe_read_only", "active_reviewed", "stateful", "intrusive", "lab_only"].map((ic) => {
+        const count = stats.by_impact_class?.[ic] ?? 0;
+        const active = impactClass === ic;
+        return (
+          <a
+            href={`/templates?impact_class=${ic}`}
+            class:list={[
+              "p-3.5 rounded-xl border transition font-mono",
+              active
+                ? "bg-emerald-950/30 border-accent-emerald text-white"
+                : "bg-bg-panel border-border-grid text-slate-300 hover:border-slate-700",
+            ]}
+          >
+            <div class="text-[10px] uppercase text-slate-400 truncate">{ic}</div>
+            <div class="text-xl font-bold mt-1">{count.toLocaleString("en-US")}</div>
+          </a>
+        );
+      })
+    }
+  </section>
+
+  <!-- SSR Search & Filter Form -->
+  <section class="bg-bg-panel border border-border-grid rounded-xl p-5">
+    <form method="GET" action="/templates" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
+      <div class="lg:col-span-2">
+        <label class="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+          Busca Textual (ID, Nome, CVE, Tag)
+        </label>
+        <input
+          type="text"
+          name="q"
+          value={q}
+          placeholder="Ex: CVE-2024, log4j, exposed-panels, git-config..."
+          class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-border-grid text-xs font-mono text-white focus:border-accent-emerald focus:outline-none"
+        />
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+          Impact Class
+        </label>
+        <select
+          name="impact_class"
+          class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-border-grid text-xs font-mono text-white focus:border-accent-emerald focus:outline-none"
+        >
+          <option value="">Todas as Classes</option>
+          <option value="safe_read_only" selected={impactClass === "safe_read_only"}>
+            safe_read_only (Bounty-Safe)
+          </option>
+          <option value="active_reviewed" selected={impactClass === "active_reviewed"}>
+            active_reviewed
+          </option>
+          <option value="stateful" selected={impactClass === "stateful"}>
+            stateful
+          </option>
+          <option value="intrusive" selected={impactClass === "intrusive"}>
+            intrusive
+          </option>
+          <option value="lab_only" selected={impactClass === "lab_only"}>
+            lab_only
+          </option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+          Severidade
+        </label>
+        <select
+          name="severity"
+          class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-border-grid text-xs font-mono text-white focus:border-accent-emerald focus:outline-none"
+        >
+          <option value="">Todas</option>
+          <option value="critical" selected={severity === "critical"}>Critical</option>
+          <option value="high" selected={severity === "high"}>High</option>
+          <option value="medium" selected={severity === "medium"}>Medium</option>
+          <option value="low" selected={severity === "low"}>Low</option>
+          <option value="info" selected={severity === "info"}>Info</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-mono uppercase text-slate-400 mb-1">
+          Tecnologia / Stack
+        </label>
+        <input
+          type="text"
+          name="tech"
+          value={tech}
+          placeholder="Ex: apache, nginx, wordpress..."
+          class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-border-grid text-xs font-mono text-white focus:border-accent-emerald focus:outline-none"
+        />
+      </div>
+
+      <div class="flex items-center gap-2">
+        <button
+          type="submit"
+          class="flex-1 px-4 py-2 rounded-lg bg-accent-emerald text-slate-950 font-mono font-bold text-xs hover:bg-emerald-400 transition"
+        >
+          Filtrar SSR
+        </button>
+        <a
+          href="/templates"
+          class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 font-mono text-xs hover:bg-slate-800 transition"
+        >
+          Limpar
+        </a>
+      </div>
+    </form>
+  </section>
+
+  <!-- Results Table with Expandable YAML & SHA-256 Viewer -->
+  <section class="bg-bg-panel border border-border-grid rounded-xl overflow-hidden">
+    <div class="px-6 py-4 border-b border-border-grid flex flex-wrap items-center justify-between gap-4">
+      <div class="text-xs font-mono text-slate-300">
+        Exibindo página <span class="text-white font-bold">{pageData.page}</span> de{" "}
+        <span class="text-white font-bold">{pageData.total_pages}</span> • Total filtrado:{" "}
+        <span class="text-accent-emerald font-bold">
+          {pageData.total.toLocaleString("en-US")}
+        </span>{" "}
+        templates
+      </div>
+
+      <!-- Pagination Top -->
+      <div class="flex items-center gap-2 text-xs font-mono">
+        {
+          pageData.page > 1 && (
+            <a
+              href={buildPageUrl(pageData.page - 1)}
+              class="px-3 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 hover:border-accent-emerald"
+            >
+              ← Anterior
+            </a>
+          )
+        }
+        {
+          pageData.page < pageData.total_pages && (
+            <a
+              href={buildPageUrl(pageData.page + 1)}
+              class="px-3 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 hover:border-accent-emerald"
+            >
+              Próxima →
+            </a>
+          )
+        }
+      </div>
+    </div>
+
+    <div class="divide-y divide-border-grid">
+      {
+        pageData.items.length === 0 ? (
+          <div class="p-10 text-center font-mono text-sm text-slate-400">
+            Nenhum template encontrado para os filtros informados ({q || impactClass || severity || tech || "padrão"}).
+          </div>
+        ) : (
+          pageData.items.map((tpl) => (
+            <details class="group p-4 hover:bg-slate-900/40 transition">
+              <summary class="cursor-pointer list-none flex flex-wrap items-center justify-between gap-4">
+                <div class="space-y-1 min-w-[260px] flex-1">
+                  <div class="flex items-center gap-2.5 flex-wrap">
+                    <span class="font-mono font-bold text-sm text-white group-open:text-accent-emerald">
+                      {tpl.id}
+                    </span>
+                    <span
+                      class:list={[
+                        "text-[10px] font-mono uppercase px-2 py-0.5 rounded border font-semibold",
+                        impactBadgeClass(tpl.impact_class),
+                      ]}
+                    >
+                      {tpl.impact_class}
+                    </span>
+                    <span
+                      class:list={[
+                        "text-[10px] font-mono uppercase px-2 py-0.5 rounded border font-semibold",
+                        severityBadgeClass(tpl.severity),
+                      ]}
+                    >
+                      {tpl.severity || "info"}
+                    </span>
+                    <span class="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                      {tpl.protocol}
+                      {tpl.http_methods?.length ? ` (${tpl.http_methods.join(",")})` : ""}
+                    </span>
+                    {tpl.cve_id && (
+                      <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-red-950/50 border border-red-500/40 text-red-300">
+                        {tpl.cve_id}
+                      </span>
+                    )}
+                    {tpl.cwe_id && (
+                      <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950/50 border border-amber-500/40 text-amber-300">
+                        {tpl.cwe_id}
+                      </span>
+                    )}
+                  </div>
+                  <div class="text-xs text-slate-300">{tpl.name}</div>
+                </div>
+
+                <div class="flex items-center gap-2 flex-wrap">
+                  {(tpl.technologies || []).slice(0, 4).map((t) => (
+                    <a
+                      href={`/templates?tech=${encodeURIComponent(t)}`}
+                      class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/30 border border-cyan-500/30 text-cyan-300 hover:border-accent-cyan"
+                    >
+                      tech:{t}
+                    </a>
+                  ))}
+                  {(tpl.tags || []).slice(0, 4).map((tag) => (
+                    <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400">
+                      #{tag}
+                    </span>
+                  ))}
+                  <span class="text-[11px] font-mono text-accent-emerald ml-2">
+                    [YAML & SHA-256 ▾]
+                  </span>
+                </div>
+              </summary>
+
+              <!-- Expanded YAML & SHA-256 Bundle Hash Drawer -->
+              <div class="mt-4 pt-4 border-t border-border-grid space-y-3 text-xs font-mono">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-950 p-3 rounded-lg border border-slate-800">
+                  <div>
+                    <span class="text-slate-500 block text-[10px]">SHA-256 BUNDLE HASH</span>
+                    <span class="text-emerald-300 break-all">{tpl.bundle_hash}</span>
+                  </div>
+                  <div>
+                    <span class="text-slate-500 block text-[10px]">UPSTREAM REVISION</span>
+                    <span class="text-slate-200">{tpl.upstream_revision}</span>
+                  </div>
+                  <div>
+                    <span class="text-slate-500 block text-[10px]">ALL TAGS</span>
+                    <span class="text-slate-300">{(tpl.tags || []).join(", ") || "—"}</span>
+                  </div>
+                </div>
+
+                {tpl.raw_yaml && (
+                  <pre class="p-4 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 overflow-x-auto max-h-80 text-[11px] leading-relaxed"><code>{tpl.raw_yaml}</code></pre>
+                )}
+              </div>
+            </details>
+          ))
+        )
+      }
+    </div>
+  </section>
+</BaseLayout>

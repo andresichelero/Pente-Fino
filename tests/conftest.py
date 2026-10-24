@@ -4,7 +4,7 @@ import socket
 import pytest
 
 
-def is_postgres_running(host: str = "localhost", port: int = 5432, timeout: float = 0.2) -> bool:
+def is_postgres_running(host: str = "127.0.0.1", port: int = 5432, timeout: float = 0.2) -> bool:
     """Check if PostgreSQL server is accepting TCP connections."""
     try:
         with socket.create_connection((host, port), timeout=timeout):

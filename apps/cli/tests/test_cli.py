@@ -352,3 +352,21 @@ def test_finding_export(runner: CliRunner) -> None:
     res_md = runner.invoke(app, ["finding", "export", "--program", slug, "--format", "markdown"])
     assert res_md.exit_code == 0
     assert f"# Findings Report for {slug}" in res_md.output
+
+
+def test_api_and_gui_cli_commands(runner: CliRunner) -> None:
+    """Verify pentefino api and pentefino gui dry-run CLI commands."""
+    res_api = runner.invoke(app, ["api", "--dry-run", "--port", "8005", "--json"])
+    assert res_api.exit_code == 0
+    api_data = json.loads(res_api.output)
+    assert api_data["status"] == "ready"
+    assert api_data["port"] == 8005
+    assert api_data["url"] == "http://127.0.0.1:8005"
+
+    res_gui = runner.invoke(app, ["gui", "--dry-run", "--api-port", "8005", "--gui-port", "4325", "--json"])
+    assert res_gui.exit_code == 0
+    gui_data = json.loads(res_gui.output)
+    assert gui_data["status"] == "ready"
+    assert gui_data["api_url"] == "http://127.0.0.1:8005"
+    assert gui_data["gui_url"] == "http://127.0.0.1:4325"
+

@@ -1,0 +1,90 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import FindingTriageBoard from "../components/islands/FindingTriageBoard";
+import { API_BASE_URL, fetchPrograms, fetchFindings } from "../lib/api";
+
+const [programs, findings] = await Promise.all([
+  fetchPrograms(),
+  fetchFindings(),
+]);
+
+const countCandidate = findings.filter((f) => f.status === "candidate").length;
+const countValidated = findings.filter((f) => f.status === "validated").length;
+const countReported = findings.filter(
+  (f) => f.status === "reported" || f.status === "accepted"
+).length;
+const countE2Plus = findings.filter(
+  (f) => f.evidence_level === "E2" || f.evidence_level === "E3"
+).length;
+---
+
+<BaseLayout
+  title="Triagem de Vulnerabilidades & Forense E2"
+  subtitle="Deduplicação SHA-256 Determinística, Máquina de Estados de Ciclo de Vida & Exportação de Laudo Bug Bounty"
+  activeNav="findings"
+>
+  <!-- SSR Summary Metrics by Status / Evidence Level (E0–E3) -->
+  <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
+      <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+        <span>CANDIDATE (E0 / E1)</span>
+        <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-accent-amber border border-amber-500/30">
+          AGUARDANDO PROVA
+        </span>
+      </div>
+      <div class="text-2xl font-mono font-bold text-white mt-2">{countCandidate}</div>
+      <p class="text-[11px] text-slate-500 mt-1">
+        Requer artefato HTTP sanitizado E2 para promoção automática
+      </p>
+    </div>
+
+    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
+      <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+        <span>VALIDATED (E2 / E3)</span>
+        <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-accent-emerald border border-emerald-500/30">
+          FORENSE ÍNTEGRA
+        </span>
+      </div>
+      <div class="text-2xl font-mono font-bold text-accent-emerald mt-2">{countValidated}</div>
+      <p class="text-[11px] text-slate-500 mt-1">
+        Par HTTP Request/Response gravado e assinado no SeaweedFS S3
+      </p>
+    </div>
+
+    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
+      <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+        <span>REPORTED / ACCEPTED</span>
+        <span class="px-1.5 py-0.5 rounded bg-cyan-500/15 text-accent-cyan border border-cyan-500/30">
+          SUBMETIDOS
+        </span>
+      </div>
+      <div class="text-2xl font-mono font-bold text-accent-cyan mt-2">{countReported}</div>
+      <p class="text-[11px] text-slate-500 mt-1">
+        Laudos exportados para HackerOne / Bugcrowd / Intigriti
+      </p>
+    </div>
+
+    <div class="bg-bg-panel border border-border-grid rounded-xl p-4">
+      <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+        <span>EVIDENCE LEVEL E2+</span>
+        <span class="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">
+          DUAL SHA-256
+        </span>
+      </div>
+      <div class="text-2xl font-mono font-bold text-purple-300 mt-2">{countE2Plus}</div>
+      <p class="text-[11px] text-slate-500 mt-1">
+        Segredos redigidos com <code class="text-emerald-300">[REDACTED]</code> antes do disco
+      </p>
+    </div>
+  </section>
+
+  <!-- Interactive Island: FindingTriageBoard -->
+  <section>
+    <FindingTriageBoard
+      client:load
+      programs={programs}
+      initialFindings={findings}
+      apiBaseUrl={API_BASE_URL}
+    />
+  </section>
+</BaseLayout>

@@ -5,7 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 
-def is_postgres_running(host: str = "localhost", port: int = 5432, timeout: float = 0.2) -> bool:
+def is_postgres_running(host: str = "127.0.0.1", port: int = 5432, timeout: float = 0.2) -> bool:
     """Check if PostgreSQL server is accepting TCP connections."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -32,5 +32,6 @@ def pytest_collection_modifyitems(config, items) -> None:
                     "test_cli_help",
                     "test_cli_version",
                     "test_program_validation",
+                    "test_api_and_gui_cli_commands",
                 ):
                     item.add_marker(skip_pg)

@@ -22,8 +22,10 @@ It decouples untrusted reconnaissance and scanning tools (`subfinder`, `dnsx`, `
 - **`packages/template_indexer` (`pentefino_template_indexer`)**: Git synchronization of upstream `projectdiscovery/nuclei-templates`, static AST classification into 5 impact classes (`safe_read_only`, `active_reviewed`, `stateful`, `intrusive`, `lab_only`), deterministic SHA-256 bundle hashing, and batch PostgreSQL ingestion.
 - **`packages/detection_planner` & `packages/finding_normalizer`**: Technology-aware `DetectionPlanner` with mandatory edge CDN/WAF tag pruning (`cloudflare`, `akamai`, `fastly`, `incapsula`, `sucuri`), `HardenedNucleiRunner`, and `FindingNormalizer` with canonical 5-tuple SHA-256 deduplication (`dedup_key`).
 
-### 4. Operator CLI
-- **`apps/cli` (`pentefino_cli`)**: Typer + Rich CLI supporting interactive tables and `--json` automation across `program`, `scope`, `recon`, `template`, `scan`, and `finding` subcommands.
+### 4. Operator CLI & Web GUI (Phase 5)
+- **`apps/cli` (`pentefino_cli`)**: Typer + Rich CLI supporting interactive tables and `--json` automation across `program`, `scope`, `recon`, `template`, `scan`, `finding`, `api`, and `gui` subcommands.
+- **`apps/api` (`pentefino_api`)**: Asynchronous FastAPI REST & WebSocket backend exposing 7-tier scope simulation, asset relationship graphs (enforcing the Critical IP Invariant), `DetectionPlanner` surgical preview, HackerOne/Bugcrowd Markdown report generation, and live scan/proxy WebSocket channels.
+- **`apps/dashboard`**: Astro 5 Server/Hybrid (`@astrojs/node`) + Preact Islands + TailwindCSS SecOps Dashboard with 5 isolated interactive islands (`ScopeLiveTester`, `AssetRelationshipGraph`, `LiveScanRunner`, `FindingTriageBoard`, `LiveProxyStreamer`).
 
 ---
 
@@ -56,6 +58,9 @@ pentefino scan run --program acme-bounty --asset app.acme.com
 # 6. Query and export findings
 pentefino finding query --program acme-bounty
 pentefino finding export --program acme-bounty --format markdown
+
+# 7. Launch the FastAPI Backend & Astro 5 Web GUI
+pentefino gui
 ```
 
 ---
@@ -63,9 +68,12 @@ pentefino finding export --program acme-bounty --format markdown
 ## Testing & Quality Assurance
 
 ```powershell
-# Run full test suite
-pytest tests/ apps/cli/tests/ -q
+# Run full test suite (290 tests across Phases 1, 2, 3, and 5)
+pytest tests/ apps/cli/tests/ apps/api/tests/ -q
 
 # Run static linter
 ruff check packages/ apps/ tests/
+
+# Build Astro 5 Dashboard
+cd apps/dashboard && npm run build
 ```
