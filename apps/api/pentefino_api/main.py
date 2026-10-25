@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import time
 from typing import Any
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from pentefino_api.deps import DatabaseStandbyError
 from pentefino_api.routers import (
@@ -192,24 +198,12 @@ def create_app() -> FastAPI:
                 "history": [],
                 "nodes": [],
                 "edges": [],
-                "total": 14107,
+                "total": 0,
                 "page": 1,
                 "page_size": 25,
-                "total_pages": 565,
-                "by_impact_class": {
-                    "safe_read_only": 11520,
-                    "active_reviewed": 1412,
-                    "stateful": 645,
-                    "intrusive": 418,
-                    "lab_only": 112,
-                },
-                "by_severity": {
-                    "critical": 1894,
-                    "high": 3642,
-                    "medium": 4815,
-                    "low": 1490,
-                    "info": 2266,
-                },
+                "total_pages": 0,
+                "by_impact_class": {},
+                "by_severity": {},
             },
         )
 
@@ -224,15 +218,21 @@ def create_app() -> FastAPI:
     async def standby_db_exception_handler(
         request: Request, exc: Exception
     ) -> JSONResponse:
-        """Return a CORS-compliant standby response when PostgreSQL becomes unreachable."""
+        """Map DB connectivity errors to standby; surface every other failure as a real 500."""
         if isinstance(exc, HTTPException):
             return JSONResponse(
                 status_code=exc.status_code,
                 content={"detail": exc.detail},
                 headers=getattr(exc, "headers", None),
             )
-        mark_db_offline()
-        return _build_standby_response(request, exc)
+        if isinstance(exc, (OperationalError, InterfaceError, OSError, ConnectionError, TimeoutError)):
+            mark_db_offline()
+            return _build_standby_response(request, exc)
+        logging.getLogger("pentefino.api").exception("Unhandled error on %s", request.url.path)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": f"Internal error ({type(exc).__name__})"},
+        )
 
     @app.get("/api/v1/health", tags=["health"])
     async def health_check() -> dict[str, Any]:

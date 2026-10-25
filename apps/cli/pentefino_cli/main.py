@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import Optional
+from dotenv import load_dotenv
 import typer
+
+load_dotenv()
 
 from pentefino_cli import __version__
 from pentefino_cli.commands import (

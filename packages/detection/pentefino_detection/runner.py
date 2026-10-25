@@ -20,7 +20,7 @@ from pentefino_runner import (
     VolumeMount,
 )
 
-DEFAULT_NUCLEI_IMAGE: str = "projectdiscovery/nuclei:v3.3.7"
+DEFAULT_NUCLEI_IMAGE: str = "projectdiscovery/nuclei:v3.3.5"
 
 
 class HardenedNucleiRunner:

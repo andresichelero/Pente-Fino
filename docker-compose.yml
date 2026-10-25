@@ -17,7 +17,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "${BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+      - "${BIND_IP:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     networks:
       pentefino-net:
         aliases:
@@ -46,7 +46,7 @@ services:
     volumes:
       - valkey_data:/data
     ports:
-      - "${BIND_IP:-127.0.0.1}:${VALKEY_PORT:-6379}:6379"
+      - "${BIND_IP:-0.0.0.0}:${VALKEY_PORT:-6379}:6379"
     networks:
       pentefino-net:
         aliases:
@@ -79,9 +79,9 @@ services:
       - seaweedfs_data:/data
       - ./docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
     ports:
-      - "${BIND_IP:-127.0.0.1}:${SEAWEEDFS_S3_PORT:-8333}:8333"
-      - "${BIND_IP:-127.0.0.1}:${SEAWEEDFS_MASTER_PORT:-9333}:9333"
-      - "${BIND_IP:-127.0.0.1}:${SEAWEEDFS_FILER_PORT:-8888}:8888"
+      - "${BIND_IP:-0.0.0.0}:${SEAWEEDFS_S3_PORT:-8333}:8333"
+      - "${BIND_IP:-0.0.0.0}:${SEAWEEDFS_MASTER_PORT:-9333}:9333"
+      - "${BIND_IP:-0.0.0.0}:${SEAWEEDFS_FILER_PORT:-8888}:8888"
     networks:
       pentefino-net:
         aliases:
@@ -109,8 +109,8 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     ports:
-      - "${BIND_IP:-127.0.0.1}:${RABBITMQ_AMQP_PORT:-5672}:5672"
-      - "${BIND_IP:-127.0.0.1}:${RABBITMQ_MGMT_PORT:-15672}:15672"
+      - "${BIND_IP:-0.0.0.0}:${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${BIND_IP:-0.0.0.0}:${RABBITMQ_MGMT_PORT:-15672}:15672"
     networks:
       pentefino-net:
         aliases:
@@ -129,7 +129,7 @@ services:
 networks:
   pentefino-net:
     driver: bridge
-    name: pentefino_pentefino-net
+    name: pentefino-net
     ipam:
       driver: default
       config:

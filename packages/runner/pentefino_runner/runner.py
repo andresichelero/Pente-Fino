@@ -146,7 +146,13 @@ class EphemeralRunner:
 
             try:
                 await asyncio.wait_for(read_tasks, timeout=1.0)
-            except BaseException:
+            except asyncio.CancelledError:
+                # Re-raise only if *this* task was cancelled from outside;
+                # otherwise it is the inner reader gather being torn down.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+            except (asyncio.TimeoutError, Exception):
                 pass
 
             if raise_on_timeout:

@@ -54,7 +54,8 @@ def test_migration_0003_metadata_and_operations():
     assert migration_mod.revision == "0003_add_filepath_and_threat_intel"
     assert migration_mod.down_revision == "0002_add_observations"
 
-    with patch("alembic.op.add_column") as mock_add_col, \
+    with patch("alembic.op.alter_column") as mock_alter_col, \
+         patch("alembic.op.add_column") as mock_add_col, \
          patch("alembic.op.create_check_constraint") as mock_create_chk, \
          patch("alembic.op.create_index") as mock_create_idx, \
          patch("alembic.op.drop_column") as mock_drop_col, \
