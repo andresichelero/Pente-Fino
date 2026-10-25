@@ -107,7 +107,7 @@ async def main():
             await session.refresh(asset)
 
         # Upsert Observation with detected technologies
-        obs = (await session.execute(select(Observation).where(Observation.asset_id == asset.id))).scalar_one_or_none()
+        obs = (await session.execute(select(Observation).where(Observation.asset_id == asset.id, Observation.observation_type == "http_probe"))).scalars().first()
         if not obs:
             obs = Observation(
                 asset_id=asset.id,
