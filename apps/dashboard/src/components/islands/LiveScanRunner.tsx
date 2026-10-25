@@ -265,8 +265,21 @@ export default function LiveScanRunner({
         const data = await res.json();
         const list = Array.isArray(data) ? data : data.assets || [];
         setAssets(list);
-        if (list.length > 0 && !assetKey) {
+        if (list.length > 0) {
           setAssetKey(list[0].canonical_key);
+        } else {
+          // If no assets yet, query scope rules to provide default root domain
+          fetch(`${apiBaseUrl}/api/v1/programs/${slug}/scope`)
+            .then((r) => r.json())
+            .then((rules) => {
+              if (Array.isArray(rules) && rules.length > 0) {
+                const pat = rules[0].pattern?.replace(/^\*\./, "");
+                if (pat) setAssetKey(pat);
+              } else if (slug === "docq") {
+                setAssetKey("docq.app");
+              }
+            })
+            .catch(() => {});
         }
       }
     } catch {
@@ -290,11 +303,16 @@ export default function LiveScanRunner({
   async function handleSimulatePlan(e?: Event) {
     if (e) e.preventDefault();
     if (!programSlug || !assetKey.trim()) return;
+    let cleanKey = assetKey.trim().replace(/^https?:\/\//i, "").split("/")[0];
+    if (programSlug === "docq" && (cleanKey === "app.docq" || cleanKey === "docq")) {
+      cleanKey = "docq.app";
+      setAssetKey("docq.app");
+    }
     setPlanning(true);
     setScanResult(null);
     setScanProgress(25);
     const sevString = selectedSeverities.join(",");
-    appendLog(`[ETAPA-1] Calculando plano de detecção → '${assetKey.trim()}' (${programSlug}) [sev=${sevString}]`);
+    appendLog(`[ETAPA-1] Calculando plano de detecção → '${cleanKey}' (${programSlug}) [sev=${sevString}]`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/scans/plan`, {
@@ -302,7 +320,7 @@ export default function LiveScanRunner({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           program_slug: programSlug,
-          asset_key: assetKey.trim(),
+          asset_key: cleanKey,
           severity: sevString || null,
           tags: tagsFilter.trim() || null,
         }),
@@ -433,7 +451,11 @@ export default function LiveScanRunner({
   // Stage 0: Run Subfinder + dnsx + httpx Reconnaissance Pipeline
   async function handleRunRecon() {
     if (!programSlug) return;
-    const cleanDomain = assetKey.trim().replace(/^https?:\/\//i, "").split("/")[0] || programSlug;
+    let cleanDomain = assetKey.trim().replace(/^https?:\/\//i, "").split("/")[0] || programSlug;
+    if (programSlug === "docq" && (cleanDomain === "app.docq" || cleanDomain === "docq")) {
+      cleanDomain = "docq.app";
+      setAssetKey("docq.app");
+    }
     setRunningRecon(true);
     setScanProgress(20);
     appendLog(`[RECON] Iniciando ReconPipeline (Subfinder -> dnsx -wd -> httpx) para '${cleanDomain}'...`);

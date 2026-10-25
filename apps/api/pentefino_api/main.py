@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
+import sys
 import time
 from typing import Any
+
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
 
 from dotenv import load_dotenv
 

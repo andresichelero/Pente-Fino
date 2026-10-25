@@ -125,6 +125,33 @@ async def run_reconnaissance(
     if "://" in clean_domain:
         clean_domain = urllib.parse.urlsplit(clean_domain).netloc or clean_domain
 
+    # Auto-resolve apex/root domain from program scope rules if input has a typo or is a child subdomain
+    rules_stmt = select(ScopeRule).where(ScopeRule.program_id == prog.id)
+    rules_res = await session.execute(rules_stmt)
+    prog_rules = rules_res.scalars().all()
+
+    root_domain = None
+    for r in prog_rules:
+        pat = r.pattern.strip().lower().lstrip("*.")
+        if "." in pat:
+            if clean_domain == pat or clean_domain.endswith("." + pat):
+                root_domain = pat
+                break
+            c_parts = set(clean_domain.split("."))
+            p_parts = set(pat.split("."))
+            if len(c_parts.intersection(p_parts)) >= 1 and (prog.slug in clean_domain or clean_domain in prog.slug):
+                root_domain = pat
+                break
+
+    if root_domain and root_domain != clean_domain:
+        logger.info(
+            "Auto-resolved recon domain from '%s' to scope root '%s' for program '%s'",
+            clean_domain,
+            root_domain,
+            prog.slug,
+        )
+        clean_domain = root_domain
+
     recon_task_id = f"recon-{uuid.uuid4().hex[:8]}"
 
     async def _live_stream(tool: str, text: str):

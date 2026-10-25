@@ -42,10 +42,10 @@ def mark_db_offline(cooldown_seconds: float = 5.0) -> None:
 
 async def check_db_available(
     database_url: Optional[str] = None,
-    cooldown_seconds: float = 5.0,
-    probe_timeout: float = 0.12,
+    cooldown_seconds: float = 2.0,
+    probe_timeout: float = 1.0,
 ) -> bool:
-    """Fast-fail TCP circuit breaker (0ms cached, <=120ms cold probe)."""
+    """Fast-fail TCP circuit breaker (0ms cached, <=1.0s cold probe)."""
     global _db_probe_ok, _db_probe_expires_at
     now = time.monotonic()
     if database_url is None and now < _db_probe_expires_at:
@@ -84,7 +84,7 @@ def get_async_engine(database_url: Optional[str] = None, echo: bool = False) -> 
     global _engine
     url = _normalize_db_url(database_url or DEFAULT_DATABASE_URL)
     if _engine is None or database_url is not None:
-        connect_args = {"timeout": 0.4} if "asyncpg" in url else {}
+        connect_args = {"timeout": 2.0} if "asyncpg" in url else {}
         engine = create_async_engine(
             url,
             echo=echo,
