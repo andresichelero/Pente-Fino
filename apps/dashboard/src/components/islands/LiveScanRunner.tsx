@@ -40,6 +40,25 @@ export default function LiveScanRunner({
   const [planning, setPlanning] = useState<boolean>(false);
   const [planResult, setPlanResult] = useState<any | null>(null);
 
+  // Advanced Tool Parameters & Dropdowns
+  const [showAdvancedParams, setShowAdvancedParams] = useState<boolean>(false);
+  const [subfinderAll, setSubfinderAll] = useState<boolean>(true);
+  const [dnsxWildcard, setDnsxWildcard] = useState<boolean>(true);
+  const [dnsxResolvers, setDnsxResolvers] = useState<string>("1.1.1.1,8.8.8.8,9.9.9.9");
+  const [httpxPorts, setHttpxPorts] = useState<string>("80,443,8080,8443");
+  const [httpxTech, setHttpxTech] = useState<boolean>(true);
+  const [httpxFollowRedirects, setHttpxFollowRedirects] = useState<boolean>(true);
+  const [naabuEnabled, setNaabuEnabled] = useState<boolean>(false);
+  const [tlsxEnabled, setTlsxEnabled] = useState<boolean>(false);
+  const [nucleiConcurrency, setNucleiConcurrency] = useState<number>(5);
+  const [nucleiRateLimit, setNucleiRateLimit] = useState<number>(10);
+  const [nucleiAutoScan, setNucleiAutoScan] = useState<boolean>(true);
+  const [nucleiHostPrune, setNucleiHostPrune] = useState<boolean>(true);
+
+  // Circuit Breaker per-domain state & worker slots
+  const [circuitBreakerAlerts, setCircuitBreakerAlerts] = useState<any[]>([]);
+  const [workerSlots, setWorkerSlots] = useState<{ [domain: string]: { status: string; findings: number; templates: number } }>({});
+
   // Stage 2: Scan Execution & WebSocket console state
   const [runningScan, setRunningScan] = useState<boolean>(false);
   const [runningRecon, setRunningRecon] = useState<boolean>(false);
@@ -158,6 +177,25 @@ export default function LiveScanRunner({
               if (line) {
                 appendLog(`[${tool}] ${line}`);
               }
+            } else if (msg.event === "circuit_breaker_tripped") {
+              const alertItem = {
+                domain: msg.domain,
+                reason: msg.reason,
+                cooldown_sec: msg.cooldown_sec,
+                time: new Date().toLocaleTimeString(),
+              };
+              setCircuitBreakerAlerts((prev) => [alertItem, ...prev.filter((a) => a.domain !== msg.domain).slice(0, 4)]);
+              appendLog(`[CIRCUIT BREAKER] 🛑 WAF detectado em '${msg.domain}' (${msg.reason}) -> Domínio em cooldown (60s). Outros workers avançando.`);
+            } else if (msg.event === "batch_asset_scanned") {
+              setWorkerSlots((prev) => ({
+                ...prev,
+                [msg.asset_key]: {
+                  status: "concluído",
+                  findings: msg.findings_count,
+                  templates: msg.templates_count,
+                },
+              }));
+              appendLog(`[BATCH:SLOT] Ativo '${msg.asset_key}' finalizado: ${msg.templates_count} templates, ${msg.findings_count} falhas.`);
             } else if (msg.event === "recon_stage") {
               appendLog(`[RECON:${String(msg.stage).toUpperCase()}] ${msg.message}`);
             } else if (msg.event === "recon_completed") {
@@ -378,13 +416,27 @@ export default function LiveScanRunner({
     setRunningScan(false);
   }
 
+  async function handleResetCircuitBreaker(domain: string) {
+    try {
+      await fetch(`${apiBaseUrl}/api/v1/scans/circuit-breaker/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain }),
+      });
+      appendLog(`[CIRCUIT BREAKER] Cooldown resetado para '${domain}'.`);
+      setCircuitBreakerAlerts((prev) => prev.filter((a) => a.domain !== domain));
+    } catch {
+      // Ignore
+    }
+  }
+
   // Stage 0: Run Subfinder + dnsx + httpx Reconnaissance Pipeline
   async function handleRunRecon() {
     if (!programSlug) return;
     const cleanDomain = assetKey.trim().replace(/^https?:\/\//i, "").split("/")[0] || programSlug;
     setRunningRecon(true);
     setScanProgress(20);
-    appendLog(`[RECON] Iniciando ReconPipeline (Subfinder -> dnsx -> httpx) para '${cleanDomain}'...`);
+    appendLog(`[RECON] Iniciando ReconPipeline (Subfinder -> dnsx -wd -> httpx) para '${cleanDomain}'...`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/recon/run`, {
@@ -394,6 +446,11 @@ export default function LiveScanRunner({
           program_slug: programSlug,
           domain: cleanDomain,
           bruteforce: false,
+          subfinder_flags: { all: subfinderAll },
+          dnsx_flags: { wildcard_detection: dnsxWildcard, resolvers: dnsxResolvers.split(",") },
+          httpx_flags: { tech_detect: httpxTech, status_code: true, title: true, follow_redirects: httpxFollowRedirects, ports: httpxPorts },
+          naabu_flags: { enabled: naabuEnabled, ports: "80,443,8080,8443" },
+          tlsx_flags: { enabled: tlsxEnabled, san: true },
         }),
       });
       if (res.ok) {
@@ -414,13 +471,13 @@ export default function LiveScanRunner({
     setRunningRecon(false);
   }
 
-  // Stage 3: Batch Surgical Scanning across ALL in-scope assets
+  // Stage 3: Batch Surgical Scanning across ALL in-scope assets (Max 5 concurrent workers)
   async function handleRunBatchScan() {
     if (!programSlug) return;
     setRunningBatch(true);
     setScanProgress(10);
     const sevString = selectedSeverities.join(",");
-    appendLog(`[BATCH-RUN] Disparando varredura cirúrgica em lote para todos os ativos em escopo de '${programSlug}' (rate-limit: 10 req/s, WAF-pruning ativo)...`);
+    appendLog(`[BATCH-RUN] Disparando varredura cirúrgica concorrente (${nucleiConcurrency} workers simultâneos, rl: ${nucleiRateLimit} req/s por worker, circuit-breaker per-domain ativo)...`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/scans/batch-run`, {
@@ -430,9 +487,11 @@ export default function LiveScanRunner({
           program_slug: programSlug,
           severity: sevString || null,
           tags: tagsFilter.trim() || null,
-          rate_limit: 10,
+          rate_limit: nucleiRateLimit,
+          concurrency: nucleiConcurrency,
           mode: runMode,
-          max_assets: 50,
+          max_assets: 100,
+          nuclei_flags: { auto_scan: nucleiAutoScan, host_prune: nucleiHostPrune, follow_redirects: true },
         }),
       });
       if (res.ok) {
@@ -598,44 +657,156 @@ export default function LiveScanRunner({
           </div>
         </div>
 
-        {/* Multi-toggle Severity Pills */}
-        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#1b2230]">
-          <div class="flex flex-wrap items-center gap-1.5">
-            <span class="kpi-label mr-1">Severities:</span>
-            {ALL_SEVERITIES.map((sev) => {
-              const active = selectedSeverities.includes(sev);
-              const colorCls =
-                sev === "critical" || sev === "high"
-                  ? active
-                    ? "pill-red"
-                    : "pill-neutral opacity-50"
-                  : sev === "medium"
-                  ? active
-                    ? "pill-amber"
-                    : "pill-neutral opacity-50"
-                  : active
-                  ? "pill-cyan"
-                  : "pill-neutral opacity-50";
-              return (
-                <button
-                  key={sev}
-                  type="button"
-                  onClick={() => toggleSeverity(sev)}
-                  class={`pill cursor-pointer transition ${colorCls}`}
+        {/* Advanced Tool Parameters Toggle */}
+        <div class="pt-2 border-t border-[#1b2230] flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setShowAdvancedParams(!showAdvancedParams)}
+            class="text-xs font-mono text-[#06b6d4] hover:text-[#22d3ee] flex items-center gap-1.5 transition"
+          >
+            <span>{showAdvancedParams ? "▼" : "▶"}</span>
+            <span>⚙ Parâmetros Avançados das Ferramentas (Dropdowns & Flags)</span>
+          </button>
+          <span class="text-[11px] font-mono text-[#7d8590]">
+            Subfinder · dnsx (-wd) · httpx · naabu · tlsx · nuclei (5 workers / rl: {nucleiRateLimit})
+          </span>
+        </div>
+
+        {/* Advanced Tool Parameters Dropdowns Panel */}
+        {showAdvancedParams && (
+          <div class="p-3 rounded bg-[#070a0f] border border-[#1b2230] space-y-3 mt-2 text-xs">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Subfinder Dropdowns */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">Subfinder · Fontes</label>
+                <select
+                  value={subfinderAll ? "all" : "default"}
+                  onChange={(e) => setSubfinderAll((e.target as HTMLSelectElement).value === "all")}
+                  class="input text-xs"
                 >
-                  {active ? "✓ " : ""}
-                  {sev}
-                </button>
-              );
-            })}
+                  <option value="all">Todas as Fontes OSINT (-all, scanmalware, hackertarget)</option>
+                  <option value="default">Apenas Fontes Padrão / Rápidas</option>
+                </select>
+              </div>
+
+              {/* dnsx Dropdowns */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">dnsx · Wildcard & Resolvers</label>
+                <select
+                  value={dnsxWildcard ? "wd_active" : "wd_off"}
+                  onChange={(e) => setDnsxWildcard((e.target as HTMLSelectElement).value === "wd_active")}
+                  class="input text-xs"
+                >
+                  <option value="wd_active">✓ Wildcard Filter Ativo (-wd, descarta *.docq.app falsos)</option>
+                  <option value="wd_off">Wildcard Filter Desativado (resolver todos)</option>
+                </select>
+              </div>
+
+              {/* httpx Ports */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">httpx · Portas Alvo</label>
+                <select
+                  value={httpxPorts}
+                  onChange={(e) => setHttpxPorts((e.target as HTMLSelectElement).value)}
+                  class="input text-xs"
+                >
+                  <option value="80,443,8080,8443">Portas Web Comuns (80, 443, 8080, 8443)</option>
+                  <option value="80,443">Apenas Padrão (80, 443)</option>
+                  <option value="80,443,8000,8080,8443,8888,9000,9443">Faixa Expandida (80,443,8000,8080,8443,8888,9000)</option>
+                </select>
+              </div>
+
+              {/* Naabu Layer 4 TCP SYN */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">Naabu · Scan TCP L4 (SYN)</label>
+                <select
+                  value={naabuEnabled ? "on" : "off"}
+                  onChange={(e) => setNaabuEnabled((e.target as HTMLSelectElement).value === "on")}
+                  class="input text-xs"
+                >
+                  <option value="off">Desativado (Prosseguir direto para HTTP)</option>
+                  <option value="on">Ativado (Scan TCP SYN antes de HTTP)</option>
+                </select>
+              </div>
+
+              {/* TLSx SAN Extraction */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">TLSx · Certificados SSL</label>
+                <select
+                  value={tlsxEnabled ? "on" : "off"}
+                  onChange={(e) => setTlsxEnabled((e.target as HTMLSelectElement).value === "on")}
+                  class="input text-xs"
+                >
+                  <option value="off">Desativado (Padrão)</option>
+                  <option value="on">Ativado (-san, inspecionar nomes alternativos)</option>
+                </select>
+              </div>
+
+              {/* Nuclei Concurrency & Rate Limit */}
+              <div class="space-y-1">
+                <label class="kpi-label block text-[#06b6d4]">Nuclei · Workers & Taxa</label>
+                <div class="grid grid-cols-2 gap-1.5">
+                  <select
+                    value={nucleiConcurrency}
+                    onChange={(e) => setNucleiConcurrency(Number((e.target as HTMLSelectElement).value))}
+                    class="input text-xs"
+                    title="Concorrência máxima de domínios simultâneos"
+                  >
+                    <option value={5}>5 Workers (Máx)</option>
+                    <option value={3}>3 Workers</option>
+                    <option value={2}>2 Workers</option>
+                    <option value={1}>1 Worker (Serial)</option>
+                  </select>
+                  <select
+                    value={nucleiRateLimit}
+                    onChange={(e) => setNucleiRateLimit(Number((e.target as HTMLSelectElement).value))}
+                    class="input text-xs"
+                    title="Rate limit por worker"
+                  >
+                    <option value={10}>10 req/s (Seguro)</option>
+                    <option value={15}>15 req/s (Rápido)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="flex items-center gap-1.5 text-[10px] font-mono text-[#7d8590]">
-            <span>Regra:</span>
-            <span class="pill pill-emerald">SAFE_READ_ONLY</span>
-            <span class="pill pill-cyan">Proxy 127.0.0.1:8080</span>
+        )}
+      </form>
+
+      {/* Circuit Breaker Alerts & Per-Domain Cooldown Banner */}
+      {circuitBreakerAlerts.length > 0 && (
+        <div class="p-3 rounded-lg bg-[#1f1607] border border-[#d97706] text-xs space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-base">🛑</span>
+              <span class="font-bold text-[#fbbf24] uppercase tracking-wide">
+                Circuit Breaker Per-Domain Ativo ({circuitBreakerAlerts.length} alvo(s) em cooldown)
+              </span>
+            </div>
+            <span class="text-[11px] font-mono text-[#fde68a]">
+              Os outros workers continuam operando normalmente sem interrupção.
+            </span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            {circuitBreakerAlerts.map((alert) => (
+              <div
+                key={alert.domain}
+                class="flex items-center gap-2 px-2.5 py-1 rounded bg-[#2e1d05] border border-[#b45309] text-[11px] font-mono text-white"
+              >
+                <span class="text-[#f87171] font-semibold">{alert.domain}</span>
+                <span class="text-[#fbbf24]">({alert.reason})</span>
+                <button
+                  type="button"
+                  onClick={() => handleResetCircuitBreaker(alert.domain)}
+                  class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-[#451a03] hover:bg-[#78350f] text-[#fde68a] border border-[#78350f] cursor-pointer"
+                >
+                  Resetar
+                </button>
+              </div>
+            ))}
           </div>
         </div>
-      </form>
+      )}
 
       {/* Pipeline Automation Toolbar (Reconnaissance + Multi-Target Batch Scan + Network Monitor) */}
       <div class="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-lg bg-[#0d1117] border border-[#1b2230]">

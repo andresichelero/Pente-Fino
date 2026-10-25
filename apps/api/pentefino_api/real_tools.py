@@ -22,7 +22,6 @@ def is_wsl_available() -> bool:
 
 def get_tool_command(tool_name: str, args: List[str]) -> List[str]:
     """Resolve command to execute tool, preferring native PATH or WSL host environment."""
-    # Check if tool is on native PATH (e.g. Linux or native Windows)
     native_bin = shutil.which(tool_name)
     if native_bin and not native_bin.lower().endswith((".bat", ".cmd")):
         return [native_bin] + args
@@ -30,22 +29,29 @@ def get_tool_command(tool_name: str, args: List[str]) -> List[str]:
     if is_wsl_available():
         return ["wsl", "-d", WSL_DISTRO, "-u", WSL_USER, "--", tool_name] + args
 
-    # Fallback to direct name
     return [tool_name] + args
 
 
 async def run_real_subfinder(
     domain: str,
+    flags: Optional[Dict[str, Any]] = None,
     broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute real Subfinder passive enumeration, streaming discovered hosts live."""
-    cmd = get_tool_command("subfinder", ["-d", domain, "-silent", "-json"])
+    f = flags or {}
+    args = ["-d", domain, "-silent", "-json"]
+    if f.get("all", True):
+        args.append("-all")
+    if f.get("recursive", False):
+        args.append("-recursive")
+
+    cmd = get_tool_command("subfinder", args)
     logger.info("Executing real subfinder: %s", " ".join(cmd))
 
     if broadcast_cb:
         await broadcast_cb(
             "SUBFINDER",
-            f"[SUBFINDER] Iniciando enumeração passiva com fontes OSINT para '{domain}'...",
+            f"[SUBFINDER] Iniciando enumeração passiva com fontes OSINT para '{domain}' (flags: {' '.join(args)})...",
         )
 
     proc = await asyncio.create_subprocess_exec(
@@ -91,20 +97,29 @@ async def run_real_subfinder(
 
 async def run_real_dnsx(
     hosts: List[str],
+    domain: Optional[str] = None,
+    flags: Optional[Dict[str, Any]] = None,
     resolvers: Optional[List[str]] = None,
     broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Execute real dnsx to resolve IP addresses and verify reachability."""
+    """Execute real dnsx to resolve IP addresses with optional wildcard detection (-wd)."""
     if not hosts:
         return []
 
-    res_list = ",".join(resolvers or ["1.1.1.1", "8.8.8.8", "9.9.9.9"])
-    cmd = get_tool_command("dnsx", ["-r", res_list, "-a", "-aaaa", "-cname", "-resp", "-json", "-silent"])
+    f = flags or {}
+    res_list = ",".join(resolvers or f.get("resolvers") or ["1.1.1.1", "8.8.8.8", "9.9.9.9"])
+    args = ["-r", res_list, "-a", "-aaaa", "-cname", "-resp", "-json", "-silent"]
+
+    # Critical user rule: dnsx -wd <domain> to filter wildcard DNS false positives
+    if f.get("wildcard_detection", True) and domain:
+        args.extend(["-wd", domain])
+
+    cmd = get_tool_command("dnsx", args)
 
     if broadcast_cb:
         await broadcast_cb(
             "DNSX",
-            f"[DNSX] Resolvendo registros DNS para {len(hosts)} subdomínio(s)...",
+            f"[DNSX] Resolvendo DNS para {len(hosts)} subdomínio(s) (wildcard-pruning={f.get('wildcard_detection', True)})...",
         )
 
     proc = await asyncio.create_subprocess_exec(
@@ -153,18 +168,32 @@ async def run_real_dnsx(
 
 async def run_real_httpx(
     hosts: List[str],
+    flags: Optional[Dict[str, Any]] = None,
     broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute real httpx to probe live HTTP/HTTPS services and detect web technologies."""
     if not hosts:
         return []
 
-    cmd = get_tool_command("httpx", ["-silent", "-json", "-title", "-tech-detect", "-status-code", "-timeout", "5"])
+    f = flags or {}
+    args = ["-silent", "-json", "-timeout", "5"]
+    if f.get("title", True):
+        args.append("-title")
+    if f.get("tech_detect", True):
+        args.append("-tech-detect")
+    if f.get("status_code", True):
+        args.append("-status-code")
+    if f.get("follow_redirects", True):
+        args.append("-follow-redirects")
+    if f.get("ports"):
+        args.extend(["-p", str(f.get("ports"))])
+
+    cmd = get_tool_command("httpx", args)
 
     if broadcast_cb:
         await broadcast_cb(
             "HTTPX",
-            f"[HTTPX] Verificando serviços HTTP ativos e tecnologias em {len(hosts)} alvo(s)...",
+            f"[HTTPX] Verificando serviços HTTP e tecnologias em {len(hosts)} alvo(s) (flags: {' '.join(args)})...",
         )
 
     proc = await asyncio.create_subprocess_exec(
@@ -213,15 +242,128 @@ async def run_real_httpx(
     return results
 
 
+async def run_real_naabu(
+    hosts: List[str],
+    ports: str = "80,443,8080,8443",
+    rate: int = 1000,
+    broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
+) -> List[Dict[str, Any]]:
+    """Execute real naabu Layer 4 TCP port scanner."""
+    if not hosts:
+        return []
+
+    cmd = get_tool_command("naabu", ["-p", ports, "-rate", str(rate), "-silent", "-json"])
+    if broadcast_cb:
+        await broadcast_cb(
+            "NAABU",
+            f"[NAABU] Varredura TCP Layer 4 (SYN) em {len(hosts)} alvos (portas={ports}, rate={rate})...",
+        )
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    results: List[Dict[str, Any]] = []
+
+    async def _feed_input():
+        if proc.stdin:
+            input_text = "\n".join(hosts) + "\n"
+            proc.stdin.write(input_text.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+    async def _read_stdout():
+        assert proc.stdout is not None
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            line_str = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            try:
+                data = json.loads(line_str)
+                results.append(data)
+                ip = data.get("ip", "")
+                port = data.get("port", "")
+                host = data.get("host", ip)
+                if broadcast_cb:
+                    await broadcast_cb("NAABU", f"[naabu:open] {host}:{port} (TCP SYN-ACK)")
+            except json.JSONDecodeError:
+                if broadcast_cb:
+                    await broadcast_cb("NAABU", line_str)
+
+    await asyncio.gather(_feed_input(), _read_stdout())
+    await proc.wait()
+    return results
+
+
+async def run_real_tlsx(
+    hosts: List[str],
+    broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
+) -> List[Dict[str, Any]]:
+    """Execute real tlsx to extract Subject Alternative Names (SANs) from SSL certificates."""
+    if not hosts:
+        return []
+
+    cmd = get_tool_command("tlsx", ["-san", "-cn", "-silent", "-json"])
+    if broadcast_cb:
+        await broadcast_cb("TLSX", f"[TLSX] Inspecionando SANs em certificados TLS para {len(hosts)} alvos...")
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    results: List[Dict[str, Any]] = []
+
+    async def _feed_input():
+        if proc.stdin:
+            input_text = "\n".join(hosts) + "\n"
+            proc.stdin.write(input_text.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+    async def _read_stdout():
+        assert proc.stdout is not None
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            line_str = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            try:
+                data = json.loads(line_str)
+                results.append(data)
+                host = data.get("host", "")
+                sans = data.get("subject_an", []) or []
+                if broadcast_cb and sans:
+                    await broadcast_cb("TLSX", f"[tlsx:san] {host} -> {len(sans)} SANs descobertos")
+            except json.JSONDecodeError:
+                pass
+
+    await asyncio.gather(_feed_input(), _read_stdout())
+    await proc.wait()
+    return results
+
+
 async def run_real_nuclei(
     target_url: str,
     template_ids: Optional[List[str]] = None,
     rate_limit: int = 10,
     tags: Optional[str] = None,
     severity: Optional[str] = None,
+    flags: Optional[Dict[str, Any]] = None,
     broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Execute real Nuclei vulnerability scanner with rate limiting and surgical templates."""
+    """Execute real Nuclei vulnerability scanner with rate limiting and surgical flags."""
+    f = flags or {}
     args = [
         "-u", target_url,
         "-rl", str(rate_limit),
@@ -231,8 +373,15 @@ async def run_real_nuclei(
         "-stats=false",
     ]
 
+    if f.get("auto_scan", True):
+        args.append("-as")
+    if f.get("host_prune", True):
+        args.append("-hpd")
+    if f.get("follow_redirects", True):
+        args.append("-fr")
+
     if template_ids:
-        for tid in template_ids[:20]:  # Limit surgical selection to top 20
+        for tid in template_ids[:20]:
             args.extend(["-id", tid])
     elif tags:
         args.extend(["-tags", tags])
@@ -246,7 +395,7 @@ async def run_real_nuclei(
     if broadcast_cb:
         await broadcast_cb(
             "NUCLEI",
-            f"[NUCLEI] Iniciando varredura cirúrgica em {target_url} (rl: {rate_limit} req/s)...",
+            f"[NUCLEI] Disparando Nuclei cirúrgico em {target_url} (rl: {rate_limit} req/s, flags: {' '.join(args)})...",
         )
 
     proc = await asyncio.create_subprocess_exec(

@@ -249,6 +249,11 @@ class ReconRunRequest(BaseModel):
     program_slug: str
     domain: str
     bruteforce: bool = False
+    subfinder_flags: dict[str, Any] = Field(default_factory=dict)
+    dnsx_flags: dict[str, Any] = Field(default_factory=dict)
+    httpx_flags: dict[str, Any] = Field(default_factory=dict)
+    naabu_flags: dict[str, Any] = Field(default_factory=dict)
+    tlsx_flags: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReconRunResponse(BaseModel):
@@ -270,8 +275,10 @@ class BatchScanRequest(BaseModel):
     severity: str | None = None
     tags: str | None = None
     rate_limit: int = 10
+    concurrency: int = 5
     mode: str = "auto"
-    max_assets: int = 50
+    max_assets: int = 100
+    nuclei_flags: dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchScanAssetSummary(BaseModel):
@@ -288,8 +295,19 @@ class BatchScanResponse(BaseModel):
     total_templates_executed: int
     total_findings_discovered: int
     rate_limit_enforced: str
+    concurrency_enforced: int = 5
     assets: list[BatchScanAssetSummary] = Field(default_factory=list)
     message: str
+
+
+class SentinelDomainResetRequest(BaseModel):
+    domain: str
+
+
+class SentinelStatusResponse(BaseModel):
+    total_monitored: int
+    blocked_count: int
+    domains: dict[str, Any]
 
 
 class EvidenceItemSchema(BaseModel):

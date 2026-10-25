@@ -20,7 +20,14 @@ from pentefino_api.schemas import (
     ScanRunRequest,
     ScanRunResponse,
     SelectedTemplateItem,
+    SentinelDomainResetRequest,
+    SentinelStatusResponse,
 )
+from pentefino_api.target_sentinel import (
+    circuit_breaker,
+    probe_domain_l7_canary,
+)
+from pentefino_domain.session import get_async_session
 from pentefino_detection import (
     DetectionPlan,
     DetectionPlanner,
@@ -386,124 +393,188 @@ async def run_batch_scans(
         )
 
     batch_run_id = f"batch-{uuid.uuid4().hex[:8]}"
-    planner = DetectionPlanner(db_session=session)
-    runner = EphemeralRunner()
-    nuclei_runner = HardenedNucleiRunner(runner=runner, rate_limit=payload.rate_limit)
-    normalizer = FindingNormalizer(db_session=session)
-
-    asset_summaries: list[BatchScanAssetSummary] = []
-    total_templates_executed = 0
-    total_findings_discovered = 0
+    concurrency_limit = min(5, max(1, getattr(payload, "concurrency", 5)))
+    worker_rate_limit = min(15, max(10, payload.rate_limit))
 
     await scan_hub.broadcast(
         batch_run_id,
         {
             "event": "batch_scan_started",
-            "message": f"Iniciando varredura cirúrgica em lote para {len(in_scope_assets)} ativos em escopo (rate_limit: {payload.rate_limit} req/s)...",
+            "message": (
+                f"Iniciando varredura concorrente em lote para {len(in_scope_assets)} ativos em escopo "
+                f"({concurrency_limit} workers simultâneos, rl: {worker_rate_limit} req/s por worker, circuit-breaker per-domain ativo)..."
+            ),
             "total_assets": len(in_scope_assets),
+            "concurrency": concurrency_limit,
+            "rate_limit_per_worker": worker_rate_limit,
             "progress": 5,
         },
     )
 
-    for idx, asset in enumerate(in_scope_assets):
-        target_asset, raw_techs, pruned_tags = await _resolve_asset_and_techs(
-            session, prog.id, asset.canonical_key
-        )
-        plan = await planner.create_plan(
-            asset=target_asset,
-            detected_technologies=raw_techs,
-            severity_filter=payload.severity,
-            tag_filter=payload.tags,
-            max_impact_class=ImpactClass.SAFE_READ_ONLY,
-        )
+    sem = asyncio.Semaphore(concurrency_limit)
+    total_templates_executed = 0
+    total_findings_discovered = 0
+    asset_summaries: list[BatchScanAssetSummary] = []
+    lock = asyncio.Lock()
 
-        progress_pct = int(5 + ((idx + 1) / len(in_scope_assets)) * 90)
+    async def _scan_single_asset(idx: int, asset: Asset) -> BatchScanAssetSummary:
+        nonlocal total_templates_executed, total_findings_discovered
+        domain_key = asset.canonical_key
 
-        # Surgical skip if no matching templates for this endpoint
-        if plan.total_templates == 0:
-            asset_summaries.append(
-                BatchScanAssetSummary(
-                    asset_key=asset.canonical_key,
+        async with sem:
+            # 1. Circuit Breaker check
+            if circuit_breaker.is_domain_blocked(domain_key):
+                summary = BatchScanAssetSummary(
+                    asset_key=domain_key,
                     matched_technologies=[],
                     total_templates=0,
                     findings_count=0,
-                    status="skipped_no_matching_tech",
+                    status="skipped_waf_cooldown",
                 )
-            )
-            continue
+                async with lock:
+                    asset_summaries.append(summary)
+                return summary
 
-        total_templates_executed += plan.total_templates
-        findings_count = 0
-        status_val = "completed"
+            # 2. Canary Probe L7
+            is_acc, lat, status_code, is_waf, reason = await probe_domain_l7_canary(domain_key)
+            if is_waf:
+                circuit_breaker.trip_domain(domain_key, reason=reason, cooldown_seconds=60.0)
+                await scan_hub.broadcast(
+                    batch_run_id,
+                    {
+                        "event": "circuit_breaker_tripped",
+                        "domain": domain_key,
+                        "reason": reason,
+                        "cooldown_sec": 60,
+                        "message": (
+                            f"[CIRCUIT BREAKER] WAF Detectado em '{domain_key}' ({reason}). "
+                            f"Alvo em cooldown de 60s; liberando slot para o próximo domínio."
+                        ),
+                    },
+                )
+                summary = BatchScanAssetSummary(
+                    asset_key=domain_key,
+                    matched_technologies=[],
+                    total_templates=0,
+                    findings_count=0,
+                    status="waf_cooldown_tripped",
+                )
+                async with lock:
+                    asset_summaries.append(summary)
+                return summary
 
-        if payload.mode == "auto":
-            async def _live_batch_nuclei_cb(tool: str, line: str):
-                try:
-                    await scan_hub.broadcast(
-                        batch_run_id,
-                        {
-                            "event": "tool_output",
-                            "tool": "NUCLEI",
-                            "line": line,
-                            "message": line,
-                        },
-                    )
-                except Exception:
-                    pass
+            if is_acc:
+                circuit_breaker.record_healthy(domain_key, lat, status_code or 200)
+
+            # 3. Detection Planner & Nuclei execution with dedicated session
+            findings_count = 0
+            status_val = "completed"
+            matched_techs: list[str] = []
+            planned_templates_count = 0
 
             try:
-                target_url = (
-                    asset.canonical_key
-                    if "://" in asset.canonical_key
-                    else f"https://{asset.canonical_key}"
-                )
-                raw_findings = await run_real_nuclei(
-                    target_url=target_url,
-                    template_ids=plan.selected_template_ids,
-                    rate_limit=payload.rate_limit,
-                    broadcast_cb=_live_batch_nuclei_cb,
-                )
-                if not raw_findings:
-                    try:
-                        raw_findings = await nuclei_runner.execute_scan(
-                            plan=plan, rate_limit=payload.rate_limit
-                        )
-                    except Exception:
-                        pass
-
-                if raw_findings:
-                    persisted = await normalizer.normalize_and_persist(
-                        raw_nuclei_results=raw_findings,
-                        program_id=prog.id,
-                        asset_id=target_asset.id,
-                        run_id=plan.plan_id,
+                async with get_async_session() as worker_session:
+                    worker_target_asset, raw_techs, _ = await _resolve_asset_and_techs(
+                        worker_session, prog.id, domain_key
                     )
-                    findings_count = len(persisted)
-                    total_findings_discovered += findings_count
-            except Exception:
-                status_val = "dry_run_fallback"
+                    worker_planner = DetectionPlanner(db_session=worker_session)
+                    plan = await worker_planner.create_plan(
+                        asset=worker_target_asset,
+                        detected_technologies=raw_techs,
+                        severity_filter=payload.severity,
+                        tag_filter=payload.tags,
+                        max_impact_class=ImpactClass.SAFE_READ_ONLY,
+                    )
+                    matched_techs = plan.matched_technologies
+                    planned_templates_count = plan.total_templates
 
-        asset_summaries.append(
-            BatchScanAssetSummary(
-                asset_key=asset.canonical_key,
-                matched_technologies=plan.matched_technologies,
-                total_templates=plan.total_templates,
+                    if planned_templates_count == 0:
+                        summary = BatchScanAssetSummary(
+                            asset_key=domain_key,
+                            matched_technologies=[],
+                            total_templates=0,
+                            findings_count=0,
+                            status="skipped_no_matching_tech",
+                        )
+                        async with lock:
+                            asset_summaries.append(summary)
+                        return summary
+
+                    async with lock:
+                        total_templates_executed += planned_templates_count
+
+                    if payload.mode == "auto":
+                        async def _live_batch_nuclei_cb(tool: str, line: str):
+                            try:
+                                await scan_hub.broadcast(
+                                    batch_run_id,
+                                    {
+                                        "event": "tool_output",
+                                        "tool": "NUCLEI",
+                                        "domain": domain_key,
+                                        "line": line,
+                                        "message": f"[{domain_key}] {line}",
+                                    },
+                                )
+                            except Exception:
+                                pass
+
+                        target_url = (
+                            domain_key
+                            if "://" in domain_key
+                            else f"https://{domain_key}"
+                        )
+                        raw_findings = await run_real_nuclei(
+                            target_url=target_url,
+                            template_ids=plan.selected_template_ids,
+                            rate_limit=worker_rate_limit,
+                            flags=payload.nuclei_flags,
+                            broadcast_cb=_live_batch_nuclei_cb,
+                        )
+
+                        if raw_findings:
+                            worker_normalizer = FindingNormalizer(db_session=worker_session)
+                            persisted = await worker_normalizer.normalize_and_persist(
+                                raw_nuclei_results=raw_findings,
+                                program_id=prog.id,
+                                asset_id=worker_target_asset.id,
+                                run_id=plan.plan_id,
+                            )
+                            findings_count = len(persisted)
+                            async with lock:
+                                total_findings_discovered += findings_count
+
+            except Exception as exc:
+                logger.warning("Error scanning asset %s: %s", domain_key, exc)
+                status_val = "error_fallback"
+
+            summary = BatchScanAssetSummary(
+                asset_key=domain_key,
+                matched_technologies=matched_techs,
+                total_templates=planned_templates_count,
                 findings_count=findings_count,
                 status=status_val,
             )
-        )
+            async with lock:
+                asset_summaries.append(summary)
 
-        await scan_hub.broadcast(
-            batch_run_id,
-            {
-                "event": "batch_asset_scanned",
-                "asset_key": asset.canonical_key,
-                "matched_technologies": plan.matched_technologies,
-                "templates_count": plan.total_templates,
-                "findings_count": findings_count,
-                "progress": progress_pct,
-            },
-        )
+            progress_pct = int(5 + ((idx + 1) / len(in_scope_assets)) * 90)
+            await scan_hub.broadcast(
+                batch_run_id,
+                {
+                    "event": "batch_asset_scanned",
+                    "asset_key": domain_key,
+                    "matched_technologies": matched_techs,
+                    "templates_count": planned_templates_count,
+                    "findings_count": findings_count,
+                    "progress": progress_pct,
+                },
+            )
+            return summary
+
+    # Execute up to 5 concurrent domain tasks
+    tasks = [_scan_single_asset(i, a) for i, a in enumerate(in_scope_assets)]
+    await asyncio.gather(*tasks)
 
     await record_api_audit(
         session=session,
@@ -515,13 +586,15 @@ async def run_batch_scans(
             "assets_count": len(in_scope_assets),
             "templates_executed": total_templates_executed,
             "findings_discovered": total_findings_discovered,
-            "rate_limit": payload.rate_limit,
+            "rate_limit_per_worker": worker_rate_limit,
+            "concurrency": concurrency_limit,
         },
     )
 
     msg = (
-        f"Varredura cirúrgica concluída para {len(in_scope_assets)} ativos em escopo: "
-        f"{total_templates_executed} templates executadas, {total_findings_discovered} falha(s) identificada(s)."
+        f"Varredura cirúrgica concorrente concluída ({concurrency_limit} workers simultâneos, rl: {worker_rate_limit} req/s): "
+        f"{len(in_scope_assets)} ativos processados, {total_templates_executed} templates executadas, "
+        f"{total_findings_discovered} falha(s) identificada(s)."
     )
 
     await scan_hub.broadcast(
@@ -538,10 +611,33 @@ async def run_batch_scans(
         total_assets_scanned=len(in_scope_assets),
         total_templates_executed=total_templates_executed,
         total_findings_discovered=total_findings_discovered,
-        rate_limit_enforced=f"{payload.rate_limit} req/s",
+        rate_limit_enforced=f"{worker_rate_limit} req/s per worker",
+        concurrency_enforced=concurrency_limit,
         assets=asset_summaries,
         message=msg,
     )
+
+
+@router.get("/circuit-breaker/status", response_model=SentinelStatusResponse)
+async def get_circuit_breaker_status() -> SentinelStatusResponse:
+    """Return real-time Circuit Breaker & Canary health states for all monitored domains."""
+    statuses = circuit_breaker.get_all_statuses()
+    blocked = len([s for s in statuses.values() if s.get("is_blocked")])
+    return SentinelStatusResponse(
+        total_monitored=len(statuses),
+        blocked_count=blocked,
+        domains=statuses,
+    )
+
+
+@router.post("/circuit-breaker/reset")
+async def reset_circuit_breaker_domain(payload: SentinelDomainResetRequest) -> dict[str, Any]:
+    """Manually reset Circuit Breaker cooldown for a specific domain or all."""
+    state = circuit_breaker.reset_domain(payload.domain)
+    return {
+        "message": f"Circuit breaker para '{payload.domain}' resetado com sucesso.",
+        "state": state.to_dict(),
+    }
 
 
 @router.get("/history", response_model=list[ScanHistoryItem])

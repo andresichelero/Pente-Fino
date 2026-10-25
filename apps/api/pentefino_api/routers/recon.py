@@ -15,7 +15,9 @@ from pentefino_api.deps import get_db_session, get_program_or_404, record_api_au
 from pentefino_api.real_tools import (
     run_real_dnsx,
     run_real_httpx,
+    run_real_naabu,
     run_real_subfinder,
+    run_real_tlsx,
 )
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import ReconRunRequest, ReconRunResponse
@@ -157,6 +159,7 @@ async def run_reconnaissance(
     try:
         discovered_candidates = await run_real_subfinder(
             domain=clean_domain,
+            flags=payload.subfinder_flags,
             broadcast_cb=_live_stream,
         )
     except Exception as exc:
@@ -235,14 +238,14 @@ async def run_reconnaissance(
                     in_scope_hosts.append(a.canonical_key)
                     in_scope_count += 1
 
-    # Stage 2: DNS Resolution via dnsx
+    # Stage 2: DNS Resolution via dnsx with wildcard detection (-wd)
     await scan_hub.broadcast(
         recon_task_id,
         {
             "event": "recon_stage",
             "stage": "dnsx",
-            "message": f"[STAGE 2] Resolvendo DNS para {len(in_scope_hosts)} alvos em escopo...",
-            "progress": 45,
+            "message": f"[STAGE 2] Resolvendo DNS e filtrando curingas (-wd) para {len(in_scope_hosts)} alvos em escopo...",
+            "progress": 40,
         },
     )
 
@@ -252,6 +255,8 @@ async def run_reconnaissance(
         try:
             resolved_records = await run_real_dnsx(
                 hosts=in_scope_hosts,
+                domain=clean_domain,
+                flags=payload.dnsx_flags,
                 broadcast_cb=_live_stream,
             )
         except Exception as exc:
@@ -277,6 +282,18 @@ async def run_reconnaissance(
 
     resolved_count = len(live_resolved_hosts) if live_resolved_hosts else in_scope_count
 
+    # Optional Stage 2.5: Naabu Layer 4 TCP Port Scan
+    if payload.naabu_flags and payload.naabu_flags.get("enabled"):
+        ports_str = str(payload.naabu_flags.get("ports") or "80,443,8080,8443")
+        try:
+            await run_real_naabu(
+                hosts=live_resolved_hosts or in_scope_hosts[:50],
+                ports=ports_str,
+                broadcast_cb=_live_stream,
+            )
+        except Exception as exc:
+            logger.warning("Real naabu failed (%s).", exc)
+
     # Stage 3: HTTP Probing & Technology Detection via httpx
     await scan_hub.broadcast(
         recon_task_id,
@@ -284,7 +301,7 @@ async def run_reconnaissance(
             "event": "recon_stage",
             "stage": "httpx",
             "message": f"[STAGE 3] Sondando portas HTTP/HTTPS e tecnologias com httpx...",
-            "progress": 75,
+            "progress": 70,
         },
     )
 
@@ -295,6 +312,7 @@ async def run_reconnaissance(
         try:
             http_probes = await run_real_httpx(
                 hosts=targets_for_httpx,
+                flags=payload.httpx_flags,
                 broadcast_cb=_live_stream,
             )
         except Exception as exc:
@@ -325,6 +343,13 @@ async def run_reconnaissance(
             )
             session.add(obs)
     await session.commit()
+
+    # Optional Stage 3.5: TLSx Certificate SAN Extraction
+    if payload.tlsx_flags and payload.tlsx_flags.get("enabled"):
+        try:
+            await run_real_tlsx(targets_for_httpx, broadcast_cb=_live_stream)
+        except Exception as exc:
+            logger.warning("Real tlsx failed (%s).", exc)
 
     if live_http_count == 0 and resolved_count > 0:
         live_http_count = resolved_count
