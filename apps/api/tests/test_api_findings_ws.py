@@ -177,5 +177,11 @@ def test_websocket_scan_and_proxy_telemetry_streams() -> None:
             assert tick_msg["mode"] == "fail-closed"
 
             ws_proxy.send_text("ping")
-            pong_proxy = ws_proxy.receive_json()
+            pong_proxy = None
+            for _ in range(10):
+                msg = ws_proxy.receive_json()
+                if msg.get("event") == "pong":
+                    pong_proxy = msg
+                    break
+            assert pong_proxy is not None
             assert pong_proxy["event"] == "pong"
