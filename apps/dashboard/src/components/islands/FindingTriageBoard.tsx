@@ -32,6 +32,29 @@ export default function FindingTriageBoard({
   const [reportMarkdown, setReportMarkdown] = useState<string>("");
   const [loadingReport, setLoadingReport] = useState<boolean>(false);
   const [copyToast, setCopyToast] = useState<boolean>(false);
+  const [evidenceBlobs, setEvidenceBlobs] = useState<Record<string, string>>({});
+  const [loadingBlobs, setLoadingBlobs] = useState<Record<string, boolean>>({});
+
+  async function toggleBlob(evId: string) {
+    if (evidenceBlobs[evId]) {
+      const next = { ...evidenceBlobs };
+      delete next[evId];
+      setEvidenceBlobs(next);
+      return;
+    }
+    setLoadingBlobs((prev) => ({ ...prev, [evId]: true }));
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/evidence/${evId}/blob`);
+      if (res.ok) {
+        const text = await res.text();
+        setEvidenceBlobs((prev) => ({ ...prev, [evId]: text }));
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoadingBlobs((prev) => ({ ...prev, [evId]: false }));
+    }
+  }
 
   useEffect(() => {
     if (!initialFindings || initialFindings.length === 0) {
@@ -254,8 +277,16 @@ export default function FindingTriageBoard({
                         onClick={() => openFindingDrawer(f)}
                         class="bg-[#070a0f] border border-[#1b2230] hover:border-[#06b6d4]/60 rounded p-2.5 cursor-pointer transition space-y-1.5"
                       >
-                        <div class="flex items-center justify-between gap-1">
-                          <span class="pill pill-emerald">{f.evidence_level || "E2"}</span>
+                        <div class="flex items-center justify-between gap-1 flex-wrap">
+                          <div class="flex items-center gap-1 flex-wrap">
+                            <span class="pill pill-emerald">{f.evidence_level || "E2"}</span>
+                            {f.in_cisa_kev && <span class="pill pill-red font-bold text-[9px]">KEV</span>}
+                            {f.epss_score != null && (
+                              <span class="pill pill-cyan font-mono text-[9px]" title={`EPSS Percentile: ${((f.epss_percentile || 0) * 100).toFixed(1)}%`}>
+                                EPSS {(f.epss_score * 100).toFixed(0)}%
+                              </span>
+                            )}
+                          </div>
                           <span
                             class={`pill ${
                               f.detector?.severity === "critical" || f.detector?.severity === "high"
@@ -396,7 +427,7 @@ export default function FindingTriageBoard({
               {/* Drawer Header */}
               <div class="flex items-start justify-between border-b border-[#1b2230] pb-3">
                 <div>
-                  <div class="flex items-center gap-1.5">
+                  <div class="flex items-center gap-1.5 flex-wrap">
                     <span class="pill pill-emerald">
                       Evidence {selectedFinding.evidence_level || "E2"}
                     </span>
@@ -406,6 +437,17 @@ export default function FindingTriageBoard({
                     <span class="pill pill-neutral">
                       conf:{selectedFinding.confidence || "high"}
                     </span>
+                    {selectedFinding.in_cisa_kev && (
+                      <span class="pill pill-red font-bold">CISA KEV</span>
+                    )}
+                    {selectedFinding.epss_score != null && (
+                      <span
+                        class="pill pill-cyan font-mono"
+                        title={`Percentil: ${((selectedFinding.epss_percentile || 0) * 100).toFixed(1)}%`}
+                      >
+                        EPSS: {(selectedFinding.epss_score * 100).toFixed(1)}% (p: {((selectedFinding.epss_percentile || 0) * 100).toFixed(1)}%)
+                      </span>
+                    )}
                   </div>
                   <h3 class="text-sm font-bold text-[#e6edf3] mt-2 font-mono">
                     {selectedFinding.detector?.name || selectedFinding.detector_id}
@@ -501,6 +543,25 @@ export default function FindingTriageBoard({
                             <span class="kpi-label block">SANITIZED SHA-256</span>
                             <span class="text-[#10b981] break-all">{ev.sanitized_sha256}</span>
                           </div>
+                          <div class="pt-1.5 border-t border-[#1b2230] flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => toggleBlob(ev.id)}
+                              class="text-[10px] text-[#06b6d4] hover:underline cursor-pointer"
+                            >
+                              {loadingBlobs[ev.id]
+                                ? "Carregando blob S3..."
+                                : evidenceBlobs[ev.id]
+                                ? "▲ Ocultar Payload S3"
+                                : "▼ Ver Payload HTTP Raw (S3)"}
+                            </button>
+                            <span class="text-[9px] text-[#7d8590]">sha256:{ev.sanitized_sha256.slice(0, 10)}</span>
+                          </div>
+                          {evidenceBlobs[ev.id] && (
+                            <pre class="bg-[#04060a] border border-[#1b2230] rounded p-2 text-[10px] font-mono text-[#10b981] overflow-x-auto max-h-48 whitespace-pre-wrap">
+                              {evidenceBlobs[ev.id]}
+                            </pre>
+                          )}
                         </div>
                       ))
                     )}

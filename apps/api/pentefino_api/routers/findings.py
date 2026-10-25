@@ -48,6 +48,10 @@ def _serialize_finding_item(
         dedup_key=finding.dedup_key.strip(),
         first_seen=finding.first_seen.isoformat(),
         last_seen=finding.last_seen.isoformat(),
+        epss_score=finding.epss_score,
+        epss_percentile=finding.epss_percentile,
+        in_cisa_kev=finding.in_cisa_kev,
+        priority_tier=finding.priority_tier,
         asset=(
             AssetInfoSchema(
                 id=str(asset_obj.id),
