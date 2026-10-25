@@ -155,22 +155,23 @@ export default function LiveScanRunner({
           tags: tagsFilter.trim() || null,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
         setPlanResult(data);
         setScanProgress(50);
         appendLog(
-          `[PLANNER] Raw tech: [${(data.raw_detected_technologies || []).join(", ")}] | CDN Pruned: [${(
+          `[PLANNER] Tecnologias detectadas: [${(data.raw_detected_technologies || []).join(", ") || "genérico"}] | CDN Pruned: [${(
             data.pruned_edge_tags || []
-          ).join(", ")}]`
+          ).join(", ") || "nenhuma"}]`
         );
         appendLog(
-          `[PLANNER] plan_id=${data.plan_id} → ${data.total_templates} templates SAFE_READ_ONLY selecionados.`
+          `[PLANNER] plan_id=${data.plan_id} → ${data.total_templates} testes seguros selecionados.`
         );
         setPlanning(false);
         return;
       } else {
-        appendLog(`[ERRO] API retornou erro ${res.status} ao gerar plano de detecção.`);
+        const errorDetail = data?.detail || `Erro ${res.status}`;
+        appendLog(`[ERRO] API retornou erro ${res.status}: ${errorDetail}`);
       }
     } catch (err: any) {
       appendLog(`[ERRO] Falha ao consultar plano de detecção na API: ${err?.message || "conexão recusada"}`);

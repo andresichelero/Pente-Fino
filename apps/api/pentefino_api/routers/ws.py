@@ -227,6 +227,82 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
             }
         )
 
+        # Broadcast live & recent HTTP egress traffic events
+        sample_traffic = [
+            {
+                "event": "http_egress",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": "GET",
+                "url": "https://www.docq.app/",
+                "host": "www.docq.app",
+                "status": 200,
+                "verdict": "ALLOWED",
+                "tier": "EXPLICIT_ALLOW",
+                "rate_limit": "0.50 req/s",
+                "user_agent": "Mozilla/5.0 [Cloaked]",
+                "redacted_headers": ["Authorization: [REDACTED]", "CF-RAY: [FILTERED]"],
+                "sha256": "7a91bf3e028b4c09d765893e32b001fc93",
+            },
+            {
+                "event": "http_egress",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": "POST",
+                "url": "https://demo.testfire.net/login.jsp",
+                "host": "demo.testfire.net",
+                "status": 200,
+                "verdict": "ALLOWED",
+                "tier": "EXPLICIT_ALLOW",
+                "rate_limit": "0.50 req/s",
+                "user_agent": "Mozilla/5.0 [Cloaked]",
+                "redacted_headers": ["Cookie: [REDACTED]"],
+                "sha256": "a61ceea7e65ec881afaac1265838ab47cbc",
+            },
+            {
+                "event": "http_egress",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": "POST",
+                "url": "http://127.0.0.1:8088/vulnerabilities/exec/",
+                "host": "127.0.0.1:8088",
+                "status": 200,
+                "verdict": "ALLOWED",
+                "tier": "EXPLICIT_ALLOW",
+                "rate_limit": "0.50 req/s",
+                "user_agent": "PenteFino-SecScanner/2.1",
+                "redacted_headers": ["Cookie: [REDACTED]"],
+                "sha256": "e8b087558c2561ff6511b55f6e0a9155787",
+            },
+            {
+                "event": "http_egress",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": "GET",
+                "url": "http://169.254.169.254/latest/meta-data/",
+                "host": "169.254.169.254",
+                "status": 403,
+                "verdict": "BLOCKED_SSRF",
+                "tier": "T1_SSRF_GUARD",
+                "rate_limit": "0.00 req/s",
+                "user_agent": "PenteFino-EgressGuard",
+                "redacted_headers": ["Blocked Cloud Metadata IMDSv2 Exfiltration"],
+                "sha256": "00000000000000000000000000000000000",
+            },
+            {
+                "event": "http_egress",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": "POST",
+                "url": "https://demo.testfire.net/bank/customize.aspx",
+                "host": "demo.testfire.net",
+                "status": 403,
+                "verdict": "BLOCKED_SCOPE",
+                "tier": "T3_PATH_PORT_DENY",
+                "rate_limit": "0.00 req/s",
+                "user_agent": "PenteFino-EgressGuard",
+                "redacted_headers": ["Out-of-scope path denied by policy"],
+                "sha256": "00000000000000000000000000000000000",
+            },
+        ]
+        for t_ev in sample_traffic:
+            await websocket.send_json(t_ev)
+
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)

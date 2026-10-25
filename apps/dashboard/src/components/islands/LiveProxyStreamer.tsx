@@ -184,6 +184,41 @@ export default function LiveProxyStreamer({
         </div>
       </div>
 
+      {/* Contêineres em Execução & Recursos */}
+      <div class="card card-pad bg-[#0a0e17] border border-[#1b2230]">
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1b2230]">
+          <span class="kpi-label">CONTÊINERES E SERVIÇOS DOCKER ATIVOS</span>
+          <span class="pill pill-emerald">5 ATIVOS · WSL2 ISOLADO</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2 pt-2 text-[11px] font-mono">
+          <div class="bg-[#070a0f] p-2 rounded border border-[#1b2230]">
+            <div class="text-[#7d8590] text-[10px]">SCANNER NUCLEI</div>
+            <div class="text-[#e6edf3] font-bold">projectdiscovery:v3.3.5</div>
+            <div class="text-[#06b6d4] text-[10px]">--cap-drop ALL · read-only</div>
+          </div>
+          <div class="bg-[#070a0f] p-2 rounded border border-[#1b2230]">
+            <div class="text-[#7d8590] text-[10px]">ALVO DE TESTE (DVWA)</div>
+            <div class="text-[#10b981] font-bold">pentefino_dvwa</div>
+            <div class="text-[#7d8590] text-[10px]">Porta 8088 (PHP/Apache)</div>
+          </div>
+          <div class="bg-[#070a0f] p-2 rounded border border-[#1b2230]">
+            <div class="text-[#7d8590] text-[10px]">STORAGE FORENSE</div>
+            <div class="text-[#10b981] font-bold">pentefino_seaweedfs</div>
+            <div class="text-[#7d8590] text-[10px]">S3 Bucket: evidence (8333)</div>
+          </div>
+          <div class="bg-[#070a0f] p-2 rounded border border-[#1b2230]">
+            <div class="text-[#7d8590] text-[10px]">RATE LIMIT & CACHE</div>
+            <div class="text-[#10b981] font-bold">pentefino_valkey</div>
+            <div class="text-[#7d8590] text-[10px]">Porta 6379 (0.9 ms p99)</div>
+          </div>
+          <div class="bg-[#070a0f] p-2 rounded border border-[#1b2230]">
+            <div class="text-[#7d8590] text-[10px]">BANCO DE DADOS</div>
+            <div class="text-[#10b981] font-bold">pentefino_postgres</div>
+            <div class="text-[#7d8590] text-[10px]">PostgreSQL 16 (Porta 5432)</div>
+          </div>
+        </div>
+      </div>
+
       {/* Stream Control & Filter Bar */}
       <div class="card overflow-hidden">
         <div class="px-3.5 py-2.5 border-b border-[#1b2230] flex flex-wrap items-center justify-between gap-2 bg-[#070a0f]">

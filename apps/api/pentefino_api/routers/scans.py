@@ -52,10 +52,23 @@ async def _resolve_asset_and_techs(
     res = await session.execute(stmt)
     target_asset = res.scalar_one_or_none()
     if not target_asset:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Asset '{clean_key}' not found in program.",
+        import ipaddress
+        raw_val = clean_key.split(":")[0]
+        try:
+            ipaddress.ip_address(raw_val)
+            atype = "ip"
+        except ValueError:
+            atype = "domain" if "." in raw_val else "hostname"
+
+        target_asset = Asset(
+            program_id=program_id,
+            canonical_key=clean_key,
+            asset_type=atype,
+            scope_state="in_scope_explicit",
         )
+        session.add(target_asset)
+        await session.flush()
+        await session.refresh(target_asset)
 
     obs_stmt = select(Observation).where(
         Observation.asset_id == target_asset.id,
