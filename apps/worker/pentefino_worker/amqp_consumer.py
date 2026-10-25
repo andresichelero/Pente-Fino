@@ -11,23 +11,21 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+import socket
+import time
 from typing import Any, Callable, Optional
 import uuid
 
 import aio_pika
 from aio_pika.abc import (
     AbstractChannel,
-    AbstractExchange,
     AbstractIncomingMessage,
-    AbstractQueue,
     AbstractRobustConnection,
 )
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pentefino_domain.enums import ImpactClass
-from pentefino_domain.models.asset import Asset
 from pentefino_domain.models.program import Program
 from pentefino_domain.session import get_async_session
 from pentefino_runner import EphemeralRunner, RunConfig, RunResult
@@ -43,6 +41,8 @@ from pentefino_worker.consumer import (
 )
 
 logger = logging.getLogger(__name__)
+
+WORKER_HEARTBEAT_PREFIX = "pentefino:worker:heartbeat:"
 
 TASKS_EXCHANGE = "pentefino.tasks"
 DLX_EXCHANGE = "pentefino.dlx"
@@ -204,10 +204,15 @@ class TrackedEphemeralRunner(EphemeralRunner):
         elif not config.container_name:
             config.container_name = f"pentefino_run_{uuid.uuid4().hex[:12]}"
 
-        # Register before starting subprocess
+        if self.registry.is_cancelled(self.run_id):
+            raise asyncio.CancelledError(f"run {self.run_id} was cancelled before its container started")
+
+        # Register before starting subprocess; the handler task is registered too so a
+        # cancel request interrupts the whole job, not just the container.
         self.registry.register(
             run_id=self.run_id,
             container_name=config.container_name,
+            task=asyncio.current_task(),
             metadata={"image": config.image, "network": config.network},
         )
         return await super().run(config, *args, **kwargs)
@@ -240,6 +245,23 @@ class AmqpWorkerDaemon:
         self._channel: Optional[AbstractChannel] = None
         self._consumer_tags: dict[str, str] = {}
         self._running = False
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self.worker_id = f"{socket.gethostname()}-{os.getpid()}"
+
+    async def _heartbeat_loop(self, interval: float = 10.0) -> None:
+        """Publish liveness to Valkey; the API live status lists workers from these keys."""
+        while True:
+            try:
+                client = await self.telemetry._get_client()
+                if client is not None:
+                    await client.set(
+                        f"{WORKER_HEARTBEAT_PREFIX}{self.worker_id}", str(time.time()), ex=int(interval * 3)
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Worker heartbeat failed: %s", exc)
+            await asyncio.sleep(interval)
 
     async def handle_scan_message(self, message: AbstractIncomingMessage) -> None:
         """Process messages from `pentefino.scan`.
@@ -325,6 +347,18 @@ class AmqpWorkerDaemon:
                 )
                 await message.ack()
                 logger.info("Scan task %s successfully processed and acked.", run_id_str)
+        except asyncio.CancelledError:
+            if self.container_registry.is_cancelled(run_id_str):
+                # Operator cancel: settle the message so it is never redelivered and re-run.
+                logger.info("Scan task %s cancelled by operator; rejecting without requeue.", run_id_str)
+                await self.telemetry.emit_scan_event(
+                    run_id_str, "scan_cancelled", {"stage": "Cancellation", "status": "cancelled"}
+                )
+                await message.reject(requeue=False)
+                return
+            # Worker shutdown: hand the job back to the broker for another worker.
+            await message.reject(requeue=True)
+            raise
         except Exception as exc:
             logger.exception("Unexpected error processing scan task %s: %s", run_id_str, exc)
             await self.telemetry.emit_scan_event(
@@ -439,6 +473,7 @@ class AmqpWorkerDaemon:
 
         # Start listening for cancellation control broadcasts
         await self.container_registry.start_cancel_listener()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         self._running = True
         logger.info("AMQP Worker Daemon active with 3 queues (recon, scan, intel) and DLQ bound.")
 
@@ -446,6 +481,13 @@ class AmqpWorkerDaemon:
         """Gracefully stop consumers and close AMQP connection."""
         self._running = False
         await self.container_registry.stop_cancel_listener()
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._heartbeat_task = None
 
         if self._channel and not self._channel.is_closed:
             for tag in self._consumer_tags.values():

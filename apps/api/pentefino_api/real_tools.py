@@ -6,13 +6,19 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-WSL_DISTRO = "Ubuntu-24.04"
-WSL_USER = "foxtrot"
+WSL_DISTRO = os.getenv("PENTEFINO_WSL_DISTRO", "Ubuntu-24.04")
+WSL_USER = os.getenv("PENTEFINO_WSL_USER", "foxtrot")
+NUCLEI_MAX_TEMPLATES = 20
+NUCLEI_TIMEOUT_SECONDS = float(os.getenv("PENTEFINO_NUCLEI_TIMEOUT", "900"))
+
+
+class UnsafeScanRequest(ValueError):
+    """Raised when a scanner invocation would escape the safe_read_only template allowlist."""
 
 
 def is_wsl_available() -> bool:
@@ -20,16 +26,41 @@ def is_wsl_available() -> bool:
     return sys.platform == "win32" and shutil.which("wsl") is not None
 
 
+def _is_python_entrypoint(binary: str) -> bool:
+    """True when `binary` is a Python console script (e.g. encode/httpx's `httpx` CLI), not a ProjectDiscovery tool."""
+    parent = Path(binary).resolve().parent
+    return any(
+        (parent / name).exists()
+        for name in ("python.exe", "python", "python3", "../pyvenv.cfg")
+    )
+
+
 def get_tool_command(tool_name: str, args: List[str]) -> List[str]:
-    """Resolve command to execute tool, preferring native PATH or WSL host environment."""
+    """Resolve command to execute tool: PENTEFINO_<TOOL>_BIN override, native PATH, then WSL."""
+    override = os.getenv(f"PENTEFINO_{tool_name.upper()}_BIN", "").strip()
+    if override:
+        return [override] + args
+
     native_bin = shutil.which(tool_name)
-    if native_bin and not native_bin.lower().endswith((".bat", ".cmd")):
+    if (
+        native_bin
+        and not native_bin.lower().endswith((".bat", ".cmd"))
+        and not _is_python_entrypoint(native_bin)
+    ):
         return [native_bin] + args
 
     if is_wsl_available():
         return ["wsl", "-d", WSL_DISTRO, "-u", WSL_USER, "--", tool_name] + args
 
     return [tool_name] + args
+
+
+async def _drain_stream(stream: Optional[asyncio.StreamReader]) -> None:
+    """Consume a pipe so a chatty child process cannot block on a full stderr buffer."""
+    if stream is None:
+        return
+    while await stream.readline():
+        pass
 
 
 async def run_real_subfinder(
@@ -89,7 +120,7 @@ async def run_real_subfinder(
                 if broadcast_cb and not line_str.startswith("{"):
                     await broadcast_cb("SUBFINDER", line_str)
 
-    await _read_stdout()
+    await asyncio.gather(_read_stdout(), _drain_stream(proc.stderr))
     await proc.wait()
     logger.info("Real subfinder finished with code %d. Discovered %d hosts.", proc.returncode, len(results))
     return results
@@ -160,7 +191,7 @@ async def run_real_dnsx(
                 if broadcast_cb:
                     await broadcast_cb("DNSX", line_str)
 
-    await asyncio.gather(_feed_input(), _read_stdout())
+    await asyncio.gather(_feed_input(), _read_stdout(), _drain_stream(proc.stderr))
     await proc.wait()
     logger.info("Real dnsx finished with code %d. Resolved %d records.", proc.returncode, len(results))
     return results
@@ -184,7 +215,8 @@ async def run_real_httpx(
     if f.get("status_code", True):
         args.append("-status-code")
     if f.get("follow_redirects", True):
-        args.append("-follow-redirects")
+        # Same-host redirects only: cross-host hops would bypass the per-hop scope check.
+        args.append("-follow-host-redirects")
     if f.get("ports"):
         args.extend(["-p", str(f.get("ports"))])
 
@@ -236,7 +268,7 @@ async def run_real_httpx(
                 if broadcast_cb:
                     await broadcast_cb("HTTPX", line_str)
 
-    await asyncio.gather(_feed_input(), _read_stdout())
+    await asyncio.gather(_feed_input(), _read_stdout(), _drain_stream(proc.stderr))
     await proc.wait()
     logger.info("Real httpx finished with code %d. %d live HTTP services.", proc.returncode, len(results))
     return results
@@ -296,7 +328,7 @@ async def run_real_naabu(
                 if broadcast_cb:
                     await broadcast_cb("NAABU", line_str)
 
-    await asyncio.gather(_feed_input(), _read_stdout())
+    await asyncio.gather(_feed_input(), _read_stdout(), _drain_stream(proc.stderr))
     await proc.wait()
     return results
 
@@ -348,7 +380,7 @@ async def run_real_tlsx(
             except json.JSONDecodeError:
                 pass
 
-    await asyncio.gather(_feed_input(), _read_stdout())
+    await asyncio.gather(_feed_input(), _read_stdout(), _drain_stream(proc.stderr))
     await proc.wait()
     return results
 
@@ -361,8 +393,20 @@ async def run_real_nuclei(
     severity: Optional[str] = None,
     flags: Optional[Dict[str, Any]] = None,
     broadcast_cb: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    run_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Execute real Nuclei vulnerability scanner with rate limiting and surgical flags."""
+    """Execute Nuclei restricted to the planner's safe_read_only template allowlist.
+
+    Refuses to start without explicit template IDs: an empty `-id` list would make
+    Nuclei fall back to its whole default catalog (intrusive templates included).
+    """
+    if not template_ids:
+        raise UnsafeScanRequest(
+            "Refusing to run nuclei without an explicit safe_read_only template allowlist."
+        )
+    if tags:
+        logger.warning("Ignoring nuclei tags=%r: tag selection bypasses the impact-class allowlist.", tags)
+
     f = flags or {}
     args = [
         "-u", target_url,
@@ -373,18 +417,30 @@ async def run_real_nuclei(
         "-stats=false",
     ]
 
-    if f.get("auto_scan", True):
-        args.append("-as")
+    # `-as` (automatic wappalyzer scan) is deliberately never passed: it selects
+    # templates by detected tech regardless of impact class.
     if f.get("host_prune", True):
         args.append("-hpd")
     if f.get("follow_redirects", True):
-        args.append("-fr")
+        # Same-host redirects only; a cross-host hop would skip scope evaluation.
+        args.append("-fhr")
 
-    if template_ids:
-        for tid in template_ids[:20]:
-            args.extend(["-id", tid])
-    elif tags:
-        args.extend(["-tags", tags])
+    egress_proxy = os.getenv("PENTEFINO_EGRESS_PROXY", "").strip()
+    if egress_proxy:
+        args.extend(["-proxy", egress_proxy])
+    elif os.getenv("PENTEFINO_REQUIRE_EGRESS_PROXY", "").lower() in ("1", "true", "yes"):
+        raise UnsafeScanRequest(
+            "PENTEFINO_REQUIRE_EGRESS_PROXY is set but PENTEFINO_EGRESS_PROXY is empty."
+        )
+
+    if len(template_ids) > NUCLEI_MAX_TEMPLATES:
+        logger.warning(
+            "Plan selected %d templates; nuclei invocation capped at %d.",
+            len(template_ids),
+            NUCLEI_MAX_TEMPLATES,
+        )
+    for tid in template_ids[:NUCLEI_MAX_TEMPLATES]:
+        args.extend(["-id", tid])
 
     if severity:
         args.extend(["-severity", severity])
@@ -403,6 +459,10 @@ async def run_real_nuclei(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    if run_id:
+        from pentefino_api.activity import activity
+
+        activity.attach_process(run_id, proc)
 
     results: List[Dict[str, Any]] = []
 
@@ -438,7 +498,14 @@ async def run_real_nuclei(
             if line_str and broadcast_cb:
                 await broadcast_cb("NUCLEI", line_str)
 
-    await asyncio.gather(_read_stdout(), _read_stderr())
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_read_stdout(), _read_stderr()),
+            timeout=NUCLEI_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error("nuclei exceeded %.0fs against %s; killing.", NUCLEI_TIMEOUT_SECONDS, target_url)
+        proc.kill()
     await proc.wait()
     logger.info("Real nuclei finished with code %d. Discovered %d findings.", proc.returncode, len(results))
     return results

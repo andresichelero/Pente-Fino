@@ -31,6 +31,14 @@ console = Console(safe_box=True)
 app = typer.Typer(help="Manage and execute targeted vulnerability scans.")
 
 
+async def _current_scope_decision(session, prog, canonical_key: str):
+    """Re-evaluate the asset against the program's current rules and authorization snapshot."""
+    from pentefino_api.scope_loader import evaluate_and_count, load_program_scope_engine
+
+    engine = await load_program_scope_engine(session, prog)
+    return evaluate_and_count(engine, canonical_key)
+
+
 @app.command("run")
 def run_scan(
     ctx: typer.Context,
@@ -83,6 +91,16 @@ def run_scan(
                     "error": (
                         f"Hard-Gate Fail-Closed: Asset '{target_asset.canonical_key}' has scope_state="
                         f"'{target_asset.scope_state}' and cannot be actively scanned."
+                    )
+                }
+
+            # The stored scope_state may predate a new deny rule or an expired snapshot.
+            decision = await _current_scope_decision(session, prog, target_asset.canonical_key)
+            if not decision.allowed:
+                return {
+                    "error": (
+                        f"Hard-Gate Fail-Closed: '{target_asset.canonical_key}' denied by scope engine "
+                        f"({decision.matched_tier.value}: {decision.reason})."
                     )
                 }
 

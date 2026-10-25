@@ -1,0 +1,5 @@
+PenteFino lab authorization — program opus-lab-docq
+Owner-declared lab targets (André, 2026-10-25): docq.app and *.docq.app.
+Allowed: passive subdomain enumeration, DNS resolution, HTTP probing, nuclei safe_read_only templates.
+Rate limit: <= 10 req/s per worker. No intrusive, stateful or lab_only templates.
+Any other domain is out of scope.

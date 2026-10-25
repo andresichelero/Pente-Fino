@@ -14,11 +14,8 @@
   "dependencies": {
     "@astrojs/node": "^11.1.9",
     "@astrojs/preact": "^6.1.1",
-    "@tailwindcss/vite": "^4.3.3",
     "astro": "^7.4.2",
-    "lucide-preact": "^1.61.0",
-    "preact": "^11.0.2",
-    "tailwindcss": "^4.3.3"
+    "preact": "^11.0.2"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

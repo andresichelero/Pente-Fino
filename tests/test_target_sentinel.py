@@ -4,7 +4,6 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from pentefino_api.target_sentinel import (
@@ -102,7 +101,6 @@ def test_circuit_breaker_manual_reset():
 @pytest.mark.asyncio
 async def test_probe_domain_l4_tcp_success():
     mock_transport = MagicMock()
-    mock_loop = MagicMock()
     
     async def fake_create_connection(*args, **kwargs):
         return mock_transport, None

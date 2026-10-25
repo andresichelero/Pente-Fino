@@ -21,7 +21,6 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
@@ -29,19 +28,16 @@ import uuid
 import aio_pika
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from pentefino_api.main import app
-from pentefino_api.routers.ws import _valkey_subscriber_loop, scan_hub
+from pentefino_api.routers.ws import _valkey_subscriber_loop
 from pentefino_worker.amqp_consumer import (
-    DLQ_QUEUE,
     DLX_EXCHANGE,
     QUEUE_INTEL,
     QUEUE_RECON,
     QUEUE_SCAN,
     TASKS_EXCHANGE,
     AmqpWorkerDaemon,
-    TrackedEphemeralRunner,
     WorkerTelemetryPublisher,
     setup_amqp_topology,
 )
@@ -49,17 +45,9 @@ from pentefino_worker.cancellation import (
     ActiveContainerRegistry,
     ActiveJobInfo,
     CANCEL_CONTROL_CHANNEL,
-    default_container_registry,
-)
-from pentefino_worker.consumer import (
-    IntelTaskJob,
-    ReconTaskJob,
-    ScanTaskJob,
-    ScanTaskWorker,
 )
 from pentefino_worker.publisher import (
     AmqpTaskPublisher,
-    default_publisher,
 )
 
 
@@ -695,7 +683,8 @@ def test_cli_scan_async_publishes_amqp_task() -> None:
     with patch("pentefino_cli.commands.scan.get_async_session", mock_session_factory):
         with patch("pentefino_cli.commands.scan.get_program_by_slug", new=AsyncMock(return_value=mock_prog)):
             with patch("pentefino_worker.publisher.default_publisher.publish_scan_task", new=AsyncMock(return_value=mock_pub_res)) as mock_pub:
-                with patch("pentefino_cli.commands.scan.record_audit_event", new=AsyncMock()):
+                with patch("pentefino_cli.commands.scan.record_audit_event", new=AsyncMock()),                      patch("pentefino_cli.commands.scan._current_scope_decision",
+                           new=AsyncMock(return_value=MagicMock(allowed=True))):
                     result = runner.invoke(
                         scan_app,
                         [

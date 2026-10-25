@@ -15,17 +15,17 @@ It decouples untrusted reconnaissance and scanning tools (`subfinder`, `dnsx`, `
 
 ### 2. Ephemeral Execution & Reconnaissance
 - **`packages/runner` (`pentefino_runner`)**: Hardened container runner (`docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL --security-opt no-new-privileges:true`) routing outbound traffic exclusively through `pentefino_proxy`.
-- **`packages/adapters` / `packages/discovery`**: Multi-stage reconnaissance pipeline (`SubfinderAdapter`, `DnsxAdapter`, `HttpxAdapter`) preserving the **Critical IP Invariant** (resolved DNS A/AAAA records are stored strictly as `Observation` metadata and never promoted into in-scope `Asset` records).
+- **`packages/adapters`**: Multi-stage reconnaissance pipeline (`SubfinderAdapter`, `DnsxAdapter`, `HttpxAdapter`, `KatanaAdapter`, TLS audit) preserving the **Critical IP Invariant** (resolved DNS A/AAAA records are stored strictly as `Observation` metadata and never promoted into in-scope `Asset` records).
 - **`data/wordlists/subdomains-top5k.txt`**: Curated 5,000-entry RFC-compliant subdomain wordlist for bounded active DNS brute-forcing.
 
 ### 3. Surgical Vulnerability Detection
 - **`packages/template_indexer` (`pentefino_template_indexer`)**: Git synchronization of upstream `projectdiscovery/nuclei-templates`, static AST classification into 5 impact classes (`safe_read_only`, `active_reviewed`, `stateful`, `intrusive`, `lab_only`), deterministic SHA-256 bundle hashing, and batch PostgreSQL ingestion.
-- **`packages/detection_planner` & `packages/finding_normalizer`**: Technology-aware `DetectionPlanner` with mandatory edge CDN/WAF tag pruning (`cloudflare`, `akamai`, `fastly`, `incapsula`, `sucuri`), `HardenedNucleiRunner`, and `FindingNormalizer` with canonical 5-tuple SHA-256 deduplication (`dedup_key`).
+- **`packages/detection`**: Technology-aware `DetectionPlanner` with mandatory edge CDN/WAF tag pruning (`cloudflare`, `akamai`, `fastly`, `incapsula`, `sucuri`), `HardenedNucleiRunner`, and `FindingNormalizer` with canonical 5-tuple SHA-256 deduplication (`dedup_key`).
 
 ### 4. Operator CLI & Web GUI (Phase 5)
 - **`apps/cli` (`pentefino_cli`)**: Typer + Rich CLI supporting interactive tables and `--json` automation across `program`, `scope`, `recon`, `template`, `scan`, `finding`, `api`, and `gui` subcommands.
-- **`apps/api` (`pentefino_api`)**: Asynchronous FastAPI REST & WebSocket backend exposing 7-tier scope simulation, asset relationship graphs (enforcing the Critical IP Invariant), `DetectionPlanner` surgical preview, HackerOne/Bugcrowd Markdown report generation, and live scan/proxy WebSocket channels.
-- **`apps/dashboard`**: Astro 5 Server/Hybrid (`@astrojs/node`) + Preact Islands + TailwindCSS SecOps Dashboard with 5 isolated interactive islands (`ScopeLiveTester`, `AssetRelationshipGraph`, `LiveScanRunner`, `FindingTriageBoard`, `LiveProxyStreamer`).
+- **`apps/api` (`pentefino_api`)**: Asynchronous FastAPI REST & WebSocket backend exposing 7-tier scope simulation, asset relationship graphs (enforcing the Critical IP Invariant), `DetectionPlanner` surgical preview, HackerOne/Bugcrowd Markdown report generation, live scan/recon output and a measured `/ws/status` live-status channel. Auth: with `PENTEFINO_API_KEY` set, every HTTP and WebSocket request must present it; without a key, only loopback clients are served (fail-closed).
+- **`apps/dashboard`**: Astro 7 Server (`@astrojs/node`) + Preact Islands SecOps dashboard. Styling is token-based CSS (light/dark), not Tailwind. Islands: `Overview`, `ProgramsScope`, `Assets`, `ScansConsole`, `Findings`, `Templates`, `NetworkMonitor`, driven live over `/ws/status` with reconnect/backoff.
 
 ---
 
@@ -33,6 +33,7 @@ It decouples untrusted reconnaissance and scanning tools (`subfinder`, `dnsx`, `
 
 ### 1. Start Core Infrastructure
 ```powershell
+# Bind to loopback by default (see .env.example: BIND_IP=127.0.0.1)
 docker compose up -d
 alembic -c packages/domain/alembic.ini upgrade head
 ```
@@ -59,7 +60,7 @@ pentefino scan run --program acme-bounty --asset app.acme.com
 pentefino finding query --program acme-bounty
 pentefino finding export --program acme-bounty --format markdown
 
-# 7. Launch the FastAPI Backend & Astro 5 Web GUI
+# 7. Launch the FastAPI Backend & Astro 7 Web GUI
 pentefino gui
 ```
 
@@ -68,12 +69,12 @@ pentefino gui
 ## Testing & Quality Assurance
 
 ```powershell
-# Run full test suite (290 tests across Phases 1, 2, 3, and 5)
+# Run full test suite (421 tests)
 pytest tests/ apps/cli/tests/ apps/api/tests/ -q
 
 # Run static linter
 ruff check packages/ apps/ tests/
 
-# Build Astro 5 Dashboard
+# Build the dashboard (Astro 7)
 cd apps/dashboard && npm run build
 ```

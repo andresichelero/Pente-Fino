@@ -8,7 +8,7 @@ import re
 import urllib.parse
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pentefino_adapters.models import PassiveFindingRecord
 from pentefino_domain.models import Observation

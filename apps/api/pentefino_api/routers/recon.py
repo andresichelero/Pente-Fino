@@ -4,8 +4,7 @@ import json
 import logging
 import urllib.parse
 import uuid
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -21,97 +20,26 @@ from pentefino_api.real_tools import (
 )
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import ReconRunRequest, ReconRunResponse
-from pentefino_adapters.dnsx import DnsxAdapter
-from pentefino_adapters.httpx import HttpxAdapter
-from pentefino_adapters.models import DiscoveredCandidate
-from pentefino_adapters.pipeline import ReconPipeline
-from pentefino_adapters.subfinder import SubfinderAdapter
 from pentefino_domain.enums import AssetType, ScopeState
-from pentefino_domain.models import Asset, AuthorizationSnapshot, Observation, Program, ScopeRule
-from pentefino_runner import EphemeralRunner
-from pentefino_scope import ScopeEngine
-from pentefino_scope.enums import (
-    AssetType as ScopeAssetType,
-    PrecedenceTier,
-    ScopeAction as ScopeRuleAction,
+from pentefino_api.activity import activity
+from pentefino_api.scope_loader import (
+    domain_within_allow_rules,
+    evaluate_and_count,
+    load_program_scope_engine,
 )
+from pentefino_domain.models import Asset, Observation, ScopeRule
+from pentefino_scope.enums import PrecedenceTier
 from pentefino_scope.ip_filter import is_prohibited_ip
-from pentefino_scope.models import (
-    AuthorizationSnapshot as ScopeAuthSnapshot,
-    ScopeRule as ScopeEngineRule,
-    ScopeTarget,
-)
+from pentefino_scope.models import ScopeTarget
+
+
+def _prohibited_ips(ips: list[str], environment_class: str) -> list[str]:
+    """Return the resolved IPs that fall in anti-SSRF ranges (loopback, RFC1918, metadata...)."""
+    return [ip for ip in ips if is_prohibited_ip(ip, environment_class=environment_class)[0]]
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/recon", tags=["recon"])
-
-
-async def _load_program_scope_engine(session: AsyncSession, prog: Program) -> ScopeEngine:
-    """Load ScopeEngine instance populated with active rules and authorization for program."""
-    rules_stmt = (
-        select(ScopeRule)
-        .where(ScopeRule.program_id == prog.id)
-        .order_by(ScopeRule.priority.asc())
-    )
-    rules_res = await session.execute(rules_stmt)
-    db_rules = rules_res.scalars().all()
-
-    auth_stmt = (
-        select(AuthorizationSnapshot)
-        .where(AuthorizationSnapshot.program_id == prog.id)
-        .order_by(AuthorizationSnapshot.created_at.desc())
-    )
-    auth_res = await session.execute(auth_stmt)
-    db_auth = auth_res.scalar_one_or_none()
-
-    if not db_auth:
-        # Auto-create baseline authorization snapshot for this program
-        db_auth = AuthorizationSnapshot(
-            program_id=prog.id,
-            source_url=f"https://{prog.slug}.security-terms",
-            policy_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            rules_json={"scope": f"*.{prog.slug}"},
-            valid_from=datetime.now(timezone.utc) - timedelta(days=1),
-            valid_until=datetime.now(timezone.utc) + timedelta(days=365),
-        )
-        session.add(db_auth)
-        await session.commit()
-
-    engine_rules: list[ScopeEngineRule] = []
-    for r in db_rules:
-        try:
-            engine_rules.append(
-                ScopeEngineRule(
-                    id=r.id,
-                    program_id=r.program_id,
-                    priority=r.priority,
-                    asset_type=ScopeAssetType(r.asset_type),
-                    pattern=r.pattern,
-                    action=ScopeRuleAction(r.action),
-                    allowed_ports=r.allowed_ports,
-                    denied_paths=r.denied_paths,
-                )
-            )
-        except Exception:
-            continue
-
-    engine_snapshot = ScopeAuthSnapshot(
-        id=db_auth.id,
-        program_id=db_auth.program_id,
-        source_url=db_auth.source_url,
-        policy_hash=db_auth.policy_hash,
-        rules_json=db_auth.rules_json,
-        valid_from=db_auth.valid_from,
-        valid_until=db_auth.valid_until,
-    )
-
-    env_class = "lab" if getattr(prog, "platform", None) == "lab" else "bounty"
-    return ScopeEngine(
-        snapshot=engine_snapshot,
-        rules=engine_rules,
-        environment_class=env_class,
-    )
 
 
 @router.post("/run", response_model=ReconRunResponse)
@@ -152,8 +80,27 @@ async def run_reconnaissance(
         )
         clean_domain = root_domain
 
-    recon_task_id = f"recon-{uuid.uuid4().hex[:8]}"
+    recon_task_id = payload.task_id or f"recon-{uuid.uuid4().hex[:8]}"
 
+    scope_engine = await load_program_scope_engine(session, prog)
+    if not domain_within_allow_rules(scope_engine, clean_domain):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Hard-Gate Fail-Closed: '{clean_domain}' is not covered by an allow rule of "
+                f"program '{prog.slug}' (or the program has no valid authorization snapshot)."
+            ),
+        )
+    activity.start(recon_task_id, "recon", prog.slug, clean_domain)
+    try:
+        return await _run_recon_stages(
+            session, prog, payload, clean_domain, recon_task_id, scope_engine
+        )
+    finally:
+        activity.finish(recon_task_id)
+
+
+async def _run_recon_stages(session, prog, payload, clean_domain, recon_task_id, scope_engine):
     async def _live_stream(tool: str, text: str):
         try:
             await scan_hub.broadcast(
@@ -168,8 +115,6 @@ async def run_reconnaissance(
             )
         except Exception:
             pass
-
-    scope_engine = await _load_program_scope_engine(session, prog)
 
     # Broadcast start of Stage 1
     await scan_hub.broadcast(
@@ -205,7 +150,7 @@ async def run_reconnaissance(
                 continue
 
             target = ScopeTarget.from_url(host, is_derived=True)
-            decision = scope_engine.evaluate_target(target)
+            decision = evaluate_and_count(scope_engine, target)
 
             if decision.allowed:
                 scope_state = (
@@ -292,8 +237,13 @@ async def run_reconnaissance(
     for rec in resolved_records:
         host = rec.get("host", "").strip().lower()
         a_ips = rec.get("a", [])
-        prohibited = any(is_prohibited_ip(ip) for ip in a_ips)
-        if (a_ips or rec.get("cname")) and not prohibited:
+        blocked = _prohibited_ips(
+            list(a_ips) + list(rec.get("aaaa", []) or []), scope_engine.environment_class
+        )
+        if blocked:
+            activity.record_scope_decision(False, f"RESOLVED_IP_PROHIBITED: {host} -> {blocked}")
+            logger.warning("Dropping %s from probing: resolves to prohibited IPs %s", host, blocked)
+        elif a_ips or rec.get("cname"):
             live_resolved_hosts.append(host)
 
         asset = saved_assets_map.get(host)
@@ -307,14 +257,14 @@ async def run_reconnaissance(
             session.add(obs)
     await session.commit()
 
-    resolved_count = len(live_resolved_hosts) if live_resolved_hosts else in_scope_count
+    resolved_count = len(live_resolved_hosts)
 
     # Optional Stage 2.5: Naabu Layer 4 TCP Port Scan
     if payload.naabu_flags and payload.naabu_flags.get("enabled"):
         ports_str = str(payload.naabu_flags.get("ports") or "80,443,8080,8443")
         try:
             await run_real_naabu(
-                hosts=live_resolved_hosts or in_scope_hosts[:50],
+                hosts=live_resolved_hosts[:50],
                 ports=ports_str,
                 broadcast_cb=_live_stream,
             )
@@ -327,12 +277,14 @@ async def run_reconnaissance(
         {
             "event": "recon_stage",
             "stage": "httpx",
-            "message": f"[STAGE 3] Sondando portas HTTP/HTTPS e tecnologias com httpx...",
+            "message": "[STAGE 3] Sondando portas HTTP/HTTPS e tecnologias com httpx...",
             "progress": 70,
         },
     )
 
-    targets_for_httpx = live_resolved_hosts or in_scope_hosts[:50]
+    # Only hosts that dnsx resolved and that passed the anti-SSRF IP check are probed.
+    # If dnsx produced nothing, nothing is probed: unresolved hosts were never IP-checked.
+    targets_for_httpx = live_resolved_hosts[:50]
     http_probes: list[dict] = []
     live_http_count = 0
     if targets_for_httpx:
@@ -378,9 +330,6 @@ async def run_reconnaissance(
         except Exception as exc:
             logger.warning("Real tlsx failed (%s).", exc)
 
-    if live_http_count == 0 and resolved_count > 0:
-        live_http_count = resolved_count
-
     out_of_scope_count = max(0, total_discovered - in_scope_count)
 
     # Sample assets
@@ -424,6 +373,7 @@ async def run_reconnaissance(
     )
 
     return ReconRunResponse(
+        task_id=recon_task_id,
         domain=clean_domain,
         program_slug=prog.slug,
         total_discovered=total_discovered,

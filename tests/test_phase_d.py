@@ -4,9 +4,8 @@ import datetime
 import hashlib
 import json
 import ssl
-import unittest.mock as mock
 import uuid
-from typing import Any, Dict, List
+from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,18 +18,15 @@ from cryptography.x509.oid import NameOID
 from pentefino_adapters.katana import KatanaAdapter
 from pentefino_adapters.models import (
     KatanaEndpointRecord,
-    PassiveFindingRecord,
     TlsAuditResult,
-    TlsCertificateInfo,
     TlsSecurityAnomaly,
 )
 from pentefino_adapters.tls_audit import TlsAuditAdapter
-from pentefino_domain.enums import ScopeState
-from pentefino_domain.models import Asset, Observation
-from pentefino_proxy.passive_analyzer import PassiveFinding, PassiveResponseAnalyzer
+from pentefino_domain.models import Asset
+from pentefino_proxy.passive_analyzer import PassiveResponseAnalyzer
 from pentefino_proxy.rate_limiter import ValkeyRateLimiter
 from pentefino_proxy.server import ForwardProxyServer, ProxyResult
-from pentefino_runner import EphemeralRunner, RunConfig, RunResult
+from pentefino_runner import EphemeralRunner, RunResult
 from pentefino_scope import ScopeEngine
 from pentefino_scope.enums import AssetType, PrecedenceTier, ScopeAction
 from pentefino_scope.models import ScopeDecision, ScopeRule, ScopeTarget

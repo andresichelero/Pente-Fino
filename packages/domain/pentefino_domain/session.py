@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -79,10 +80,35 @@ async def check_db_available(
         return False
 
 
+def _current_loop() -> Optional[asyncio.AbstractEventLoop]:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+# Weak reference, not id(): a new loop can reuse a dead loop's id().
+_engine_loop_ref: Optional["weakref.ReferenceType[asyncio.AbstractEventLoop]"] = None
+
+
+def _engine_belongs_to_current_loop() -> bool:
+    loop = _current_loop()
+    owner = _engine_loop_ref() if _engine_loop_ref is not None else None
+    return owner is loop
+
+
 def get_async_engine(database_url: Optional[str] = None, echo: bool = False) -> AsyncEngine:
-    """Creates or returns the cached async SQLAlchemy engine."""
-    global _engine
+    """Creates or returns the cached async SQLAlchemy engine.
+
+    The cache is per event loop: asyncpg connections are bound to the loop that opened
+    them, so an engine created under one `asyncio.run()` (e.g. a CLI command) must not be
+    reused by another loop (e.g. the API, or the next CLI command in the same process).
+    """
+    global _engine, _session_factory, _engine_loop_ref
     url = _normalize_db_url(database_url or DEFAULT_DATABASE_URL)
+    if database_url is None and _engine is not None and not _engine_belongs_to_current_loop():
+        _engine = None
+        _session_factory = None
     if _engine is None or database_url is not None:
         connect_args = {"timeout": 2.0} if "asyncpg" in url else {}
         engine = create_async_engine(
@@ -94,6 +120,8 @@ def get_async_engine(database_url: Optional[str] = None, echo: bool = False) -> 
         )
         if database_url is None:
             _engine = engine
+            loop = _current_loop()
+            _engine_loop_ref = weakref.ref(loop) if loop is not None else None
         return engine
     return _engine
 
@@ -101,8 +129,10 @@ def get_async_engine(database_url: Optional[str] = None, echo: bool = False) -> 
 def get_async_session_factory(
     database_url: Optional[str] = None,
 ) -> async_sessionmaker[AsyncSession]:
-    """Creates or returns the cached async session factory."""
+    """Creates or returns the cached async session factory (bound to the current loop's engine)."""
     global _session_factory
+    if database_url is None and _engine is not None and not _engine_belongs_to_current_loop():
+        get_async_engine()
     if _session_factory is None or database_url is not None:
         engine = get_async_engine(database_url=database_url)
         factory = async_sessionmaker(

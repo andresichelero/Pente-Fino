@@ -5,7 +5,11 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timedelta, timezone
+
 from pentefino_domain.models.asset import Asset
+from pentefino_domain.models.authorization import AuthorizationSnapshot
+from pentefino_domain.models.scope_rule import ScopeRule
 from pentefino_domain.models.observation import Observation
 from pentefino_domain.models.program import Program
 from pentefino_domain.models.template import TemplateCatalog
@@ -141,9 +145,31 @@ async def test_scan_plan_cdn_pruning_and_dry_run_execution(
     db_session.add(prog)
     await db_session.flush()
 
+    # The scope engine is re-evaluated on every plan/run, so the program needs a real
+    # authorization snapshot and an allow rule; a stored scope_state alone is not trusted.
+    db_session.add(
+        AuthorizationSnapshot(
+            program_id=prog.id,
+            source_url="https://pentefino.local/pytest/policy",
+            policy_hash="a" * 64,
+            rules_json={"pytest": True},
+            valid_from=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    db_session.add(
+        ScopeRule(
+            program_id=prog.id,
+            priority=10,
+            asset_type="domain",
+            pattern="lab.pentefino.test",
+            action="allow",
+        )
+    )
+    await db_session.flush()
+
     asset = Asset(
         program_id=prog.id,
-        canonical_key="scanme.nmap.org",
+        canonical_key="lab.pentefino.test",
         asset_type="domain",
         scope_state="in_scope_explicit",
     )
@@ -164,13 +190,13 @@ async def test_scan_plan_cdn_pruning_and_dry_run_execution(
             "/api/v1/scans/plan",
             json={
                 "program_slug": test_slug,
-                "asset_key": "scanme.nmap.org",
+                "asset_key": "lab.pentefino.test",
             },
         )
         assert plan_res.status_code == 200
         plan = plan_res.json()
         assert plan["program_slug"] == test_slug
-        assert plan["asset_key"] == "scanme.nmap.org"
+        assert plan["asset_key"] == "lab.pentefino.test"
         assert "cloudflare" in plan["pruned_edge_tags"]
         assert "apache" in plan["matched_technologies"]
         assert "cloudflare" not in plan["matched_technologies"]
@@ -189,7 +215,7 @@ async def test_scan_plan_cdn_pruning_and_dry_run_execution(
             "/api/v1/scans/run",
             json={
                 "program_slug": test_slug,
-                "asset_key": "scanme.nmap.org",
+                "asset_key": "lab.pentefino.test",
                 "mode": "dry_run",
             },
         )

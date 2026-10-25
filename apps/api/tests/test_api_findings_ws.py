@@ -173,8 +173,11 @@ def test_websocket_scan_and_proxy_telemetry_streams() -> None:
 
             tick_msg = ws_proxy.receive_json()
             assert tick_msg["event"] == "telemetry_tick"
-            assert tick_msg["rate_limit_rps"] in (0.5, 10.0)
-            assert tick_msg["mode"] == "fail-closed"
+            # Limits are reported as configuration, never as a measured rate.
+            assert tick_msg["configured_limits"]["source"] == "environment"
+            assert "rate_limit_rps" not in tick_msg
+            # Traffic is either real (published by the proxy) or explicitly unavailable.
+            assert "available" in tick_msg["traffic"]
 
             ws_proxy.send_text("ping")
             pong_proxy = None

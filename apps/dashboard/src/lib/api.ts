@@ -1,507 +1,303 @@
-export const API_BASE_URL =
-  import.meta.env.PUBLIC_API_URL || "http://127.0.0.1:8000";
-export const WS_BASE_URL =
-  import.meta.env.PUBLIC_WS_URL || "ws://127.0.0.1:8000";
+/**
+ * Browser-side API client. Every call either returns real data or throws an
+ * ApiError that says what went wrong; nothing is replaced by placeholder values.
+ */
+export const API_BASE_URL: string = import.meta.env.PUBLIC_API_URL || "http://127.0.0.1:8000";
+export const WS_BASE_URL: string = import.meta.env.PUBLIC_WS_URL || API_BASE_URL.replace(/^http/, "ws");
+const API_KEY: string = import.meta.env.PUBLIC_API_KEY || "";
 
-export interface HealthResponse {
+export type ApiErrorKind = "network" | "standby" | "unauthorized" | "not_found" | "rejected" | "server";
+
+export class ApiError extends Error {
+  constructor(
+    public kind: ApiErrorKind,
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function headers(extra?: HeadersInit): HeadersInit {
+  return {
+    Accept: "application/json",
+    ...(API_KEY ? { "X-PenteFino-Key": API_KEY } : {}),
+    ...(extra || {}),
+  };
+}
+
+export async function api<T>(path: string, init: RequestInit = {}, timeoutMs = 15000): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+      headers: headers(init.body ? { "Content-Type": "application/json" } : undefined),
+    });
+  } catch (err) {
+    const aborted = (err as Error)?.name === "AbortError";
+    throw new ApiError(
+      "network",
+      0,
+      aborted ? `A API não respondeu em ${timeoutMs / 1000}s.` : `API inacessível em ${API_BASE_URL}.`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (res.ok) return body as T;
+  const detail = typeof body?.detail === "string" ? body.detail : res.statusText;
+  if (res.status === 503 && body?.status === "standby") {
+    throw new ApiError("standby", 503, "PostgreSQL fora do ar: a API está em standby.");
+  }
+  if (res.status === 401) throw new ApiError("unauthorized", 401, `Não autorizado: ${detail}`);
+  if (res.status === 404) throw new ApiError("not_found", 404, detail);
+  if (res.status < 500) throw new ApiError("rejected", res.status, formatDetail(body?.detail) || detail);
+  throw new ApiError("server", res.status, `Erro ${res.status}: ${detail}`);
+}
+
+function formatDetail(detail: unknown): string {
+  if (Array.isArray(detail)) {
+    return detail.map((d: any) => `${(d.loc || []).slice(1).join(".")}: ${d.msg}`).join("; ");
+  }
+  return typeof detail === "string" ? detail : "";
+}
+
+export const post = <T>(path: string, data: unknown, timeoutMs?: number) =>
+  api<T>(path, { method: "POST", body: JSON.stringify(data) }, timeoutMs);
+export const patch = <T>(path: string, data: unknown) =>
+  api<T>(path, { method: "PATCH", body: JSON.stringify(data) });
+export const del = <T>(path: string) => api<T>(path, { method: "DELETE" });
+
+export function wsUrl(path: string): string {
+  const url = `${WS_BASE_URL}${path}`;
+  return API_KEY ? `${url}${url.includes("?") ? "&" : "?"}key=${encodeURIComponent(API_KEY)}` : url;
+}
+
+// ---------------------------------------------------------------------------
+// Types (subset of the API schemas actually rendered)
+// ---------------------------------------------------------------------------
+export interface Check {
+  status: "up" | "down" | "degraded" | "unknown";
+  latency_ms: number | null;
+  checked_at: number;
+  source: string;
+  detail: string;
+  [k: string]: any;
+}
+
+export interface ActiveOp {
+  run_id: string;
+  kind: string;
+  program_slug: string;
+  target: string;
+  started_at: string;
+  elapsed_s: number;
+  cancelled: boolean;
+}
+
+export interface LiveStatus {
+  generated_at: number;
+  systems: Record<string, Check>;
+  execution: {
+    checked_at: number;
+    active_scans: ActiveOp[];
+    active_recon: ActiveOp[];
+    amqp: {
+      available: boolean;
+      detail?: string;
+      checked_at?: number;
+      total_ready?: number;
+      total_unacked?: number;
+      queues: { name: string; messages_ready: number; messages_unacked: number; consumers: number }[];
+    };
+  };
+  scope: {
+    api: {
+      window_s: number;
+      evaluations: number;
+      denied: number;
+      ssrf_blocked: number;
+      since_start: Record<string, number>;
+      counting_since: string;
+      checked_at: number;
+    };
+    proxy: {
+      available: boolean;
+      detail?: string;
+      checked_at?: number;
+      totals?: Record<string, number>;
+      requests_last_5m?: number;
+    };
+  };
+  findings: {
+    available: boolean;
+    detail?: string;
+    checked_at?: number;
+    needs_triage?: number;
+    new_24h?: number;
+    by_status?: Record<string, number>;
+    open_by_severity?: Record<string, number>;
+    open_by_evidence_level?: Record<string, number>;
+    recent?: {
+      id: string;
+      detector_id: string;
+      asset: string | null;
+      severity: string;
+      status: string;
+      evidence_level: string;
+      first_seen: string | null;
+    }[];
+  };
+  network: NetworkHealth;
+}
+
+export interface NetworkTarget {
+  name: string;
+  host: string;
+  latency_ms: number | null;
+  jitter_ms: number | null;
+  loss_pct: number | null;
+  samples?: number;
   status: string;
-  database?: string;
-  db_connected?: boolean;
-  template_count?: number;
-  programs_count?: number;
-  assets_count?: number;
-  findings_count?: number;
-  validated_e2_count?: number;
-  proxy_mode?: string;
-  version?: string;
-  recent_audit_events?: AuditEventItem[];
+  checked_at?: number;
 }
 
-export interface AuditEventItem {
-  sequence: number;
-  actor: string;
-  event_type: string;
-  object_type: string;
-  object_id: string;
-  payload: Record<string, unknown>;
-  occurred_at: string;
+export interface NetworkHealth {
+  status: string;
+  overall_latency_ms: number | null;
+  overall_jitter_ms: number | null;
+  packet_loss_pct: number | null;
+  download_kbps?: number;
+  upload_kbps?: number;
+  packets_sent?: number;
+  packets_recv?: number;
+  targets: NetworkTarget[];
+  source?: string;
+  timestamp?: number;
 }
 
-export interface ProgramItem {
+export interface Program {
   id: string;
   slug: string;
   name: string;
   platform: string;
   state: string;
-  default_policy_id: string;
   created_at?: string;
-  updated_at?: string;
   scope_rules_count?: number;
   assets_count?: number;
   findings_count?: number;
+  snapshots_count?: number;
 }
 
-export interface ScopeRuleItem {
+export interface ScopeRule {
   id: string;
-  program_id: string;
-  priority: number;
-  asset_type: string;
-  pattern: string;
   action: string;
-  allowed_ports?: number[] | null;
-  denied_paths?: string[] | null;
+  pattern: string;
+  asset_type: string;
+  priority: number;
+  allowed_ports: number[] | null;
+  denied_paths: string[] | null;
   max_impact_class: string;
-  created_at?: string;
 }
 
-export interface AssetObservation {
-  id: string;
-  observation_type: string;
-  raw_data?: string | null;
-  metadata_json: Record<string, any>;
-  created_at?: string;
+export interface ScopeDecision {
+  target: string;
+  allowed: boolean;
+  scope_state: string;
+  precedence_tier: string;
+  matched_pattern: string | null;
+  reason: string;
+  target_canonical: string;
 }
 
 export interface AssetItem {
   id: string;
-  program_id: string;
   canonical_key: string;
   asset_type: string;
   scope_state: string;
   first_seen: string;
   last_seen: string;
-  observations?: AssetObservation[];
-  resolved_ips?: string[];
+  findings_count?: number;
   technologies?: string[];
   status_code?: number | null;
   title?: string | null;
-  cdn_provider?: string | null;
-}
-
-export interface GraphNode {
-  data: {
-    id: string;
-    label: string;
-    type: string;
-    scope_state?: string;
-    asset_type?: string;
-    invariant_note?: string;
-    cdn?: string | null;
-    status_code?: number | null;
-    technologies?: string[];
-    [key: string]: any;
-  };
-}
-
-export interface GraphEdge {
-  data: {
-    id: string;
-    source: string;
-    target: string;
-    label?: string;
-    relation?: string;
-  };
-}
-
-export interface AssetGraphResponse {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  summary?: {
-    total_assets: number;
-    in_scope_explicit: number;
-    in_scope_derived: number;
-    candidate: number;
-    out_of_scope: number;
-    observation_ips: number;
-  };
-}
-
-export interface TemplateStatsResponse {
-  total: number;
-  by_impact_class: Record<string, number>;
-  by_severity: Record<string, number>;
-  by_protocol: Record<string, number>;
-  top_technologies?: Array<{ name: string; count: number }>;
-}
-
-export interface TemplateItem {
-  id: string;
-  upstream_revision: string;
-  bundle_hash: string;
-  name: string;
-  protocol: string;
-  http_methods?: string[] | null;
-  impact_class: string;
-  cve_id?: string | null;
-  cwe_id?: string | null;
-  severity?: string | null;
-  technologies?: string[] | null;
-  tags?: string[] | null;
-  raw_yaml?: string;
-  updated_at?: string;
-}
-
-export interface PaginatedTemplatesResponse {
-  items: TemplateItem[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-}
-
-export interface EvidenceArtifactItem {
-  id: string;
-  finding_id: string;
-  run_id: string;
-  evidence_type: string;
-  original_sha256?: string | null;
-  sanitized_sha256: string;
-  seaweed_object_key: string;
-  redaction_profile: string;
-  created_at?: string;
-  sanitized_payload?: string | Record<string, any>;
 }
 
 export interface FindingItem {
   id: string;
-  program_id: string;
-  program_slug?: string;
-  asset_id: string;
-  asset_canonical_key?: string;
-  dedup_key: string;
+  program_slug: string;
   detector_id: string;
-  detector_name?: string;
-  severity?: string;
-  advisory_id?: string | null;
   status: string;
   evidence_level: string;
   confidence: string;
   first_seen: string;
   last_seen: string;
-  evidence_items?: EvidenceArtifactItem[];
+  in_cisa_kev: boolean;
+  epss_score: number | null;
+  asset?: { canonical_key: string; scope_state: string } | null;
+  detector?: { name: string; severity: string; cve_id: string | null } | null;
 }
 
-export interface ScanHistoryItem {
+export interface TemplateItem {
   id: string;
-  run_id?: string;
-  program_slug: string;
-  stage: string;
-  status: string;
-  target?: string;
-  planned_templates_count?: number;
-  pruned_cdn_templates_count?: number;
-  cdn_detected?: string | null;
-  findings_created?: number;
-  started_at: string;
-  completed_at?: string | null;
-  logs?: string[];
+  name: string;
+  protocol: string;
+  impact_class: string;
+  severity: string;
+  cve_id: string | null;
+  technologies: string[];
+  tags: string[];
 }
 
-const _responseCache = new Map<string, { expiresAt: number; data: unknown }>();
-const _inFlight = new Map<string, Promise<unknown>>();
-const CACHE_TTL_MS = 3000;
-
-async function safeFetch<T>(
-  path: string,
-  fallback: T,
-  timeoutMs = 1200
-): Promise<T> {
-  const now = Date.now();
-  const cached = _responseCache.get(path);
-  if (cached && now < cached.expiresAt) {
-    return cached.data as T;
-  }
-
-  const existing = _inFlight.get(path);
-  if (existing) {
-    return (await existing) as T;
-  }
-
-  const requestPromise = (async (): Promise<T> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(`${API_BASE_URL}${path}`, {
-        signal: controller.signal,
-        headers: {
-          Accept: "application/json",
-        },
-      });
-      if (!res.ok) {
-        _responseCache.set(path, { expiresAt: Date.now() + CACHE_TTL_MS, data: fallback });
-        return fallback;
-      }
-      const data = (await res.json()) as T;
-      _responseCache.set(path, { expiresAt: Date.now() + CACHE_TTL_MS, data });
-      return data;
-    } catch {
-      _responseCache.set(path, { expiresAt: Date.now() + CACHE_TTL_MS, data: fallback });
-      return fallback;
-    } finally {
-      clearTimeout(timer);
-      _inFlight.delete(path);
-    }
-  })();
-
-  _inFlight.set(path, requestPromise);
-  return requestPromise;
+export interface TemplatePage {
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  items: TemplateItem[];
 }
 
-export async function fetchHealth(): Promise<HealthResponse> {
-  const fallback: HealthResponse = {
-    status: "offline",
-    database: "offline",
-    db_connected: false,
-    template_count: 0,
-    programs_count: 0,
-    assets_count: 0,
-    findings_count: 0,
-    validated_e2_count: 0,
-    proxy_mode: "FAIL-CLOSED",
-    version: "0.5.0",
-    recent_audit_events: [],
-  };
-  const data = await safeFetch<any>("/api/v1/health", fallback);
-  return {
-    ...fallback,
-    ...data,
-    db_connected:
-      data?.db_connected ??
-      (data?.database === "connected" ||
-        data?.database === "ok" ||
-        data?.status === "ok" ||
-        data?.status === "healthy"),
-    template_count: data?.template_count ?? data?.templates_indexed ?? 0,
-    recent_audit_events: Array.isArray(data?.recent_audit_events)
-      ? data.recent_audit_events
-      : [],
-  };
+export interface HistoryItem {
+  sequence: number;
+  actor: string;
+  event_type: string;
+  object_type: string;
+  object_id: string;
+  payload: Record<string, any>;
+  occurred_at: string;
 }
 
-export async function fetchPrograms(): Promise<ProgramItem[]> {
-  const data = await safeFetch<any>("/api/v1/programs", []);
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.items)) return data.items;
-  if (data && Array.isArray(data.programs)) return data.programs;
-  return [];
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+export function ms(v: number | null | undefined): string {
+  if (v === null || v === undefined) return "indisponível";
+  return v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`;
 }
 
-export async function fetchScopeRules(slug: string): Promise<ScopeRuleItem[]> {
-  if (!slug) return [];
-  const data = await safeFetch<any>(
-    `/api/v1/programs/${encodeURIComponent(slug)}/scope`,
-    []
-  );
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.rules)) return data.rules;
-  if (data && Array.isArray(data.items)) return data.items;
-  return [];
+export function ago(ts: number | string | null | undefined, now = Date.now()): string {
+  if (ts === null || ts === undefined) return "—";
+  const t = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
+  if (Number.isNaN(t)) return "—";
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 60) return `há ${s}s`;
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
+  return `há ${Math.floor(s / 86400)} d`;
 }
 
-export async function fetchAssets(
-  slug: string,
-  scopeState?: string
-): Promise<AssetItem[]> {
-  if (!slug) return [];
-  const qs = scopeState
-    ? `?scope_state=${encodeURIComponent(scopeState)}`
-    : "";
-  const data = await safeFetch<any>(
-    `/api/v1/programs/${encodeURIComponent(slug)}/assets${qs}`,
-    []
-  );
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.assets)) return data.assets;
-  if (data && Array.isArray(data.items)) return data.items;
-  return [];
-}
-
-export async function fetchAssetGraph(
-  slug: string
-): Promise<AssetGraphResponse> {
-  const emptyGraph: AssetGraphResponse = {
-    nodes: [],
-    edges: [],
-    summary: {
-      total_assets: 0,
-      in_scope_explicit: 0,
-      in_scope_derived: 0,
-      candidate: 0,
-      out_of_scope: 0,
-      observation_ips: 0,
-    },
-  };
-  if (!slug) return emptyGraph;
-  const data = await safeFetch<any>(
-    `/api/v1/programs/${encodeURIComponent(slug)}/assets/graph`,
-    emptyGraph
-  );
-  const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
-  const edges = Array.isArray(data?.edges) ? data.edges : [];
-  return {
-    nodes,
-    edges,
-    summary: data?.summary || {
-      total_assets: nodes.filter((n: any) => (n.node_type || n.data?.type) === "asset").length,
-      in_scope_explicit: 0,
-      in_scope_derived: 0,
-      candidate: 0,
-      out_of_scope: 0,
-      observation_ips: 0,
-    },
-  };
-}
-
-export async function fetchTemplateStats(): Promise<TemplateStatsResponse> {
-  const fallback: TemplateStatsResponse = {
-    total: 0,
-    by_impact_class: {},
-    by_severity: {},
-    by_protocol: {},
-    top_technologies: [],
-  };
-  const data = await safeFetch<any>("/api/v1/templates/stats", fallback);
-  return {
-    total: data?.total ?? fallback.total,
-    by_impact_class: data?.by_impact_class ?? fallback.by_impact_class,
-    by_severity: data?.by_severity ?? fallback.by_severity,
-    by_protocol: data?.by_protocol ?? fallback.by_protocol,
-    top_technologies: Array.isArray(data?.top_technologies)
-      ? data.top_technologies
-      : [],
-  };
-}
-
-export async function fetchTemplates(
-  params: Record<string, string | number> = {}
-): Promise<PaginatedTemplatesResponse> {
-  const searchParams = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && String(v).trim() !== "") {
-      searchParams.set(k, String(v));
-    }
-  }
-  const qs = searchParams.toString() ? `?${searchParams.toString()}` : "";
-  const page = Number(params.page || 1);
-  const pageSize = Number(params.page_size || params.limit || 25);
-  const fallback: PaginatedTemplatesResponse = {
-    items: [],
-    total: 0,
-    page,
-    page_size: pageSize,
-    total_pages: 0,
-  };
-  const data = await safeFetch<any>(`/api/v1/templates${qs}`, fallback);
-  if (Array.isArray(data)) {
-    return {
-      items: data,
-      total: data.length,
-      page,
-      page_size: pageSize,
-      total_pages: Math.max(1, Math.ceil(data.length / pageSize)),
-    };
-  }
-  const items = Array.isArray(data?.items)
-    ? data.items
-    : Array.isArray(data?.templates)
-    ? data.templates
-    : [];
-  const total = typeof data?.total === "number" ? data.total : items.length;
-  const resolvedPageSize = data?.page_size || data?.limit || pageSize;
-  const totalPages =
-    data?.total_pages || Math.max(0, Math.ceil(total / resolvedPageSize));
-  return {
-    items,
-    total,
-    page: data?.page || page,
-    page_size: resolvedPageSize,
-    total_pages: totalPages,
-  };
-}
-
-export async function fetchFindings(
-  params?: Record<string, string>
-): Promise<FindingItem[]> {
-  const searchParams = new URLSearchParams();
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && String(v).trim() !== "") {
-        searchParams.set(k, String(v));
-      }
-    }
-  }
-  const qs = searchParams.toString() ? `?${searchParams.toString()}` : "";
-  const data = await safeFetch<any>(`/api/v1/findings${qs}`, []);
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.items)) return data.items;
-  if (data && Array.isArray(data.findings)) return data.findings;
-  return [];
-}
-
-export interface TelemetrySummaryResponse {
-  status: string;
-  db_connected: boolean;
-  rate_limit_rps: number;
-  burst_capacity: number;
-  concurrency_limit: number;
-  templates_indexed: number;
-  programs_count: number;
-  assets_count: number;
-  findings_count: number;
-  validated_e2_count: number;
-  audit_events_count: number;
-  planner_latency_ms: number;
-  db_latency_ms: number;
-  valkey_latency_ms: number;
-  rps_series: number[];
-  scope_evals_series: number[];
-  ssrf_blocks_series: number[];
-  planner_ms_series: number[];
-  db_latency_ms_series: number[];
-  valkey_latency_ms_series: number[];
-}
-
-export async function fetchTelemetrySummary(): Promise<TelemetrySummaryResponse> {
-  const fallback: TelemetrySummaryResponse = {
-    status: "idle",
-    db_connected: false,
-    rate_limit_rps: 0,
-    burst_capacity: 0,
-    concurrency_limit: 0,
-    templates_indexed: 0,
-    programs_count: 0,
-    assets_count: 0,
-    findings_count: 0,
-    validated_e2_count: 0,
-    audit_events_count: 0,
-    planner_latency_ms: 0,
-    db_latency_ms: 0,
-    valkey_latency_ms: 0,
-    rps_series: [],
-    scope_evals_series: [],
-    ssrf_blocks_series: [],
-    planner_ms_series: [],
-    db_latency_ms_series: [],
-    valkey_latency_ms_series: [],
-  };
-  const data = await safeFetch<any>("/api/v1/telemetry/summary", fallback);
-  return {
-    ...fallback,
-    ...data,
-    rps_series: Array.isArray(data?.rps_series) ? data.rps_series : [],
-    scope_evals_series: Array.isArray(data?.scope_evals_series) ? data.scope_evals_series : [],
-    ssrf_blocks_series: Array.isArray(data?.ssrf_blocks_series) ? data.ssrf_blocks_series : [],
-    planner_ms_series: Array.isArray(data?.planner_ms_series) ? data.planner_ms_series : [],
-    db_latency_ms_series: Array.isArray(data?.db_latency_ms_series) ? data.db_latency_ms_series : [],
-    valkey_latency_ms_series: Array.isArray(data?.valkey_latency_ms_series) ? data.valkey_latency_ms_series : [],
-  };
-}
-
-export async function fetchScanHistory(): Promise<ScanHistoryItem[]> {
-  const data = await safeFetch<any>("/api/v1/scans/history", []);
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.items)) return data.items;
-  if (data && Array.isArray(data.history)) return data.history;
-  if (data && Array.isArray(data.scans)) return data.scans;
-  return [];
+export function dateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? "—"
+    : d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 }

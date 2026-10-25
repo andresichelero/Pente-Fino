@@ -1,27 +1,12 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
-import ScopeLiveTester from "../components/islands/ScopeLiveTester";
-import { API_BASE_URL, fetchPrograms } from "../lib/api";
-
-const programs = await fetchPrograms();
-const querySlug = Astro.url.searchParams.get("program");
-const activeSlug =
-  querySlug && programs.some((p) => p.slug === querySlug)
-    ? querySlug
-    : programs[0]?.slug || "";
+import ProgramsScope from "../components/islands/ProgramsScope.tsx";
 ---
 
 <BaseLayout
-  title="Programas & Escopo"
-  activeNav="programs"
+  title="Programas e escopo"
+  lead="Cada programa define o que pode ser testado. Sem regra de allow e sem autorização, todo alvo é negado."
+  active="programs"
 >
-  <!-- Interactive Island: ScopeLiveTester -->
-  <section>
-    <ScopeLiveTester
-      client:load
-      initialPrograms={programs}
-      initialSlug={activeSlug}
-      apiBaseUrl={API_BASE_URL}
-    />
-  </section>
+  <ProgramsScope client:only="preact" />
 </BaseLayout>

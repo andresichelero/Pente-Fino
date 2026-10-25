@@ -16,7 +16,6 @@ from pentefino_cli.db import run_async
 from pentefino_cli.formatters.json_output import print_json
 from pentefino_intel.enricher import (
     BASELINE_CISA_KEV_CVES,
-    ThreatIntelEnricher,
 )
 
 logger = logging.getLogger(__name__)

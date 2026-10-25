@@ -18,14 +18,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocketException, status
+from fastapi.requests import HTTPConnection
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 
 from pentefino_api.deps import DatabaseStandbyError
-from pentefino_api.network_monitor import get_network_health_metrics
+from pentefino_api.live_status import get_live_status
+from pentefino_api.network_monitor import get_network_health_metrics_async
+from pentefino_api.telemetry_series import record_sample, sample_series
 from pentefino_api.routers import (
     assets,
     evidence,
@@ -49,29 +52,34 @@ _SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SNAPSHOT_TTL_SECONDS = 2.5
 
 
-async def _fetch_db_counts_snapshot() -> tuple[bool, float, dict[str, Any]]:
+def _standby_snapshot() -> dict[str, Any]:
+    """Counts are unknown while the database is down: report None, never placeholders."""
+    return {
+        "db_connected": False,
+        "db_latency_ms": None,
+        "templates_count": None,
+        "active_programs_count": None,
+        "programs_count": None,
+        "assets_count": None,
+        "findings_count": None,
+        "validated_e2_count": None,
+        "audit_count": None,
+        "recent_audit_events": [],
+    }
+
+
+async def _fetch_db_counts_snapshot() -> tuple[bool, float | None, dict[str, Any]]:
     """Fetch combined counts in a single SQL roundtrip with a 2.5s in-memory TTL cache."""
     now = time.monotonic()
     cached = _SNAPSHOT_CACHE.get("counts")
     if cached and now < cached[0]:
         data = cached[1]
-        return bool(data["db_connected"]), float(data["db_latency_ms"]), data
+        return bool(data["db_connected"]), data["db_latency_ms"], data
 
     if not await check_db_available():
-        standby_data = {
-            "db_connected": False,
-            "db_latency_ms": 0.4,
-            "templates_count": 14107,
-            "active_programs_count": 0,
-            "programs_count": 0,
-            "assets_count": 0,
-            "findings_count": 0,
-            "validated_e2_count": 0,
-            "audit_count": 0,
-            "recent_audit_events": [],
-        }
+        standby_data = _standby_snapshot()
         _SNAPSHOT_CACHE["counts"] = (now + _SNAPSHOT_TTL_SECONDS, standby_data)
-        return False, 0.4, standby_data
+        return False, None, standby_data
 
     t0 = time.perf_counter()
     try:
@@ -116,7 +124,7 @@ async def _fetch_db_counts_snapshot() -> tuple[bool, float, dict[str, Any]]:
         db_latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         live_data = {
             "db_connected": True,
-            "db_latency_ms": max(0.4, db_latency_ms),
+            "db_latency_ms": db_latency_ms,
             "templates_count": int(row.templates or 0),
             "active_programs_count": int(row.active_programs or 0),
             "programs_count": int(row.programs or 0),
@@ -128,38 +136,52 @@ async def _fetch_db_counts_snapshot() -> tuple[bool, float, dict[str, Any]]:
         }
         _SNAPSHOT_CACHE["counts"] = (now + _SNAPSHOT_TTL_SECONDS, live_data)
         return True, live_data["db_latency_ms"], live_data
-    except Exception:
+    except Exception as exc:
+        logging.getLogger("pentefino.api").warning("DB counts snapshot failed: %r", exc)
         mark_db_offline()
-        standby_data = {
-            "db_connected": False,
-            "db_latency_ms": 0.4,
-            "templates_count": 14107,
-            "active_programs_count": 0,
-            "programs_count": 0,
-            "assets_count": 0,
-            "findings_count": 0,
-            "validated_e2_count": 0,
-            "audit_count": 0,
-            "recent_audit_events": [],
-        }
+        standby_data = _standby_snapshot()
         _SNAPSHOT_CACHE["counts"] = (now + _SNAPSHOT_TTL_SECONDS, standby_data)
-        return False, 0.4, standby_data
+        return False, None, standby_data
+
+
+_LOOPBACK_DEFAULT = "127.0.0.1,::1,localhost"
+
+
+def _trusted_clients() -> set[str]:
+    raw = os.getenv("PENTEFINO_TRUSTED_CLIENTS", _LOOPBACK_DEFAULT)
+    return {c.strip() for c in raw.split(",") if c.strip()}
 
 
 async def verify_api_key(
+    conn: HTTPConnection,
     x_pentefino_key: str | None = Header(default=None, alias="X-PenteFino-Key"),
 ) -> None:
-    """Enforce X-PenteFino-Key authentication when PENTEFINO_API_KEY env var is configured."""
+    """Authenticate every HTTP and WebSocket request, failing closed.
+
+    - PENTEFINO_API_KEY set: require it in the X-PenteFino-Key header (HTTP) or, because
+      browsers cannot set headers on a WebSocket handshake, in the `key` query parameter
+      (WebSocket only).
+    - PENTEFINO_API_KEY unset: only clients in PENTEFINO_TRUSTED_CLIENTS (loopback by
+      default) are served; everyone else gets 401 instead of an open API.
+    """
+    is_ws = conn.scope.get("type") == "websocket"
     expected_key = os.getenv("PENTEFINO_API_KEY", "").strip()
-    if not expected_key:
-        return
-    if not x_pentefino_key or not secrets.compare_digest(
-        x_pentefino_key.strip(), expected_key
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-PenteFino-Key header.",
+    if expected_key:
+        supplied = x_pentefino_key or (conn.query_params.get("key") if is_ws else None)
+        if supplied and secrets.compare_digest(supplied.strip(), expected_key):
+            return
+        reason = "Invalid or missing X-PenteFino-Key header."
+    else:
+        client_host = conn.client.host if conn.client else ""
+        if client_host in _trusted_clients():
+            return
+        reason = (
+            "PENTEFINO_API_KEY is not configured; only loopback clients are allowed. "
+            "Set PENTEFINO_API_KEY to serve remote clients."
         )
+    if is_ws:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=reason)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=reason)
 
 
 def create_app() -> FastAPI:
@@ -189,13 +211,10 @@ def create_app() -> FastAPI:
     )
 
     def _build_standby_response(request: Request, exc: Exception) -> JSONResponse:
-        status_code = (
-            status.HTTP_200_OK
-            if request.method in ("GET", "HEAD", "OPTIONS")
-            else status.HTTP_503_SERVICE_UNAVAILABLE
-        )
+        # 503 for every method: a 200 with empty lists is indistinguishable from "no data".
         return JSONResponse(
-            status_code=status_code,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "5"},
             content={
                 "status": "standby",
                 "db_connected": False,
@@ -235,7 +254,12 @@ def create_app() -> FastAPI:
                 content={"detail": exc.detail},
                 headers=getattr(exc, "headers", None),
             )
-        if isinstance(exc, (OperationalError, InterfaceError, OSError, ConnectionError, TimeoutError)):
+        if isinstance(exc, (OperationalError, InterfaceError)):
+            mark_db_offline()
+            return _build_standby_response(request, exc)
+        if isinstance(exc, (OSError, TimeoutError)) and not await check_db_available():
+            # Socket-level errors are only "standby" when PostgreSQL really is unreachable;
+            # otherwise (S3, docker, a scanner binary...) they are genuine 500s.
             mark_db_offline()
             return _build_standby_response(request, exc)
         logging.getLogger("pentefino.api").exception("Unhandled error on %s", request.url.path)
@@ -256,55 +280,61 @@ def create_app() -> FastAPI:
             "db_connected": db_connected,
             "db_latency_ms": db_latency_ms,
             "templates_count": snap["templates_count"],
-            "template_count": snap["templates_count"] or 14107,
+            "template_count": snap["templates_count"],
             "active_programs_count": snap["active_programs_count"],
-            "programs_count": snap["active_programs_count"],
+            "programs_count": snap["programs_count"],
             "assets_count": snap["assets_count"],
             "findings_count": snap["findings_count"],
             "validated_e2_count": snap["validated_e2_count"],
-            "proxy_mode": "FAIL-CLOSED | BOUNTY-SAFE",
             "recent_audit_events": snap["recent_audit_events"],
         }
 
     @app.get("/api/v1/telemetry/summary", tags=["telemetry"])
     async def telemetry_summary() -> dict[str, Any]:
-        """Return 12-point time-series and operational capacity metrics for ds41 sparkline cards."""
-        db_connected, db_latency_ms, snap = await _fetch_db_counts_snapshot()
-        base_lat = max(0.8, min(25.0, db_latency_ms or 1.8))
-        audit_count = snap["audit_count"]
-        net_metrics = get_network_health_metrics()
+        """Measured counters and latencies; configured limits are labelled as configuration.
 
+        Series are samples of the live status taken by this process, so they stay empty
+        until the live status has been polled at least twice.
+        """
+        db_connected, db_latency_ms, snap = await _fetch_db_counts_snapshot()
+        live = await get_live_status()
+        record_sample(live)
         return {
             "status": "ok" if db_connected else "degraded",
             "db_connected": db_connected,
-            "rate_limit_rps": 10.0,
-            "burst_capacity": 2,
-            "concurrency_limit": 1,
-            "templates_indexed": snap["templates_count"] or 14107,
+            "configured_limits": {
+                "source": "environment",
+                "rate_limit_host_rps": float(os.getenv("RATE_LIMIT_HOST_RPS", "0.5")),
+                "rate_limit_program_rps": float(os.getenv("RATE_LIMIT_PROGRAM_RPS", "2.0")),
+                "max_concurrency_per_host": int(os.getenv("RATE_LIMIT_MAX_CONCURRENCY_PER_HOST", "1")),
+            },
+            "templates_indexed": snap["templates_count"],
             "programs_count": snap["programs_count"],
             "assets_count": snap["assets_count"],
             "findings_count": snap["findings_count"],
             "validated_e2_count": snap["validated_e2_count"],
-            "audit_events_count": audit_count,
-            "planner_latency_ms": 8.4,
-            "db_latency_ms": base_lat,
-            "valkey_latency_ms": 0.9,
-            "network": net_metrics,
-            "rps_series": [0.42, 0.48, 0.50, 0.49, 0.45, 0.50, 0.47, 0.50, 0.46, 0.49, 0.50, 0.48],
-            "scope_evals_series": [14, 18, 22, 19, 25, 28, 24, 31, 29, 34, 32, max(18, audit_count % 45 + 15)],
-            "ssrf_blocks_series": [0, 0, 1, 0, 0, 2, 0, 1, 0, 0, 1, 0],
-            "planner_ms_series": [11.2, 10.4, 9.8, 9.1, 8.9, 8.6, 8.5, 8.7, 8.3, 8.4, 8.2, 8.4],
-            "db_latency_ms_series": [
-                round(base_lat * f, 2)
-                for f in (1.15, 1.08, 1.02, 0.96, 1.04, 0.98, 0.95, 1.05, 0.99, 0.94, 0.97, 1.0)
-            ],
-            "valkey_latency_ms_series": [1.1, 1.0, 0.9, 0.9, 1.0, 0.8, 0.9, 0.9, 1.0, 0.8, 0.9, 0.9],
+            "audit_events_count": snap["audit_count"],
+            "planner_latency_ms": None,
+            "db_latency_ms": db_latency_ms,
+            "valkey_latency_ms": live["systems"]["valkey"]["latency_ms"],
+            "network": live["network"],
+            "series": sample_series(),
+            "unavailable": {
+                "planner_latency_ms": "DetectionPlanner does not record timings",
+            },
         }
 
     @app.get("/api/v1/telemetry/network-health", tags=["telemetry"])
     async def get_network_health() -> dict[str, Any]:
         """Return real network monitor stats: ping, jitter, loss, packets, throughput, and target health."""
-        return get_network_health_metrics()
+        return await get_network_health_metrics_async()
+
+    @app.get("/api/v1/status/live", tags=["telemetry"])
+    async def live_status() -> dict[str, Any]:
+        """One-shot live snapshot of every subsystem (same payload as /ws/status)."""
+        snap = await get_live_status()
+        record_sample(snap)
+        return snap
 
     app.include_router(programs.router)
     app.include_router(scope.router)

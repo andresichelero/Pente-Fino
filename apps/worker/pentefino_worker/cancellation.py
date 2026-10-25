@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from typing import Any, Optional
 import uuid
 
@@ -39,6 +40,9 @@ class ActiveContainerRegistry:
 
     def __init__(self, valkey_url: Optional[str] = None) -> None:
         self._jobs: dict[str, ActiveJobInfo] = {}
+        # Tombstones for runs cancelled before (or while) they were registered here, so a
+        # late-starting container is refused instead of running after the operator cancelled.
+        self._cancelled: dict[str, float] = {}
         self._valkey_url = valkey_url or os.getenv("VALKEY_URL") or os.getenv("REDIS_URL") or "redis://localhost:6379/0"
         self._cancel_listener_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
@@ -61,6 +65,15 @@ class ActiveContainerRegistry:
         self._jobs[key] = job_info
         logger.info("Registered active container %s for run %s", container_name, key)
         return job_info
+
+    def mark_cancelled(self, run_id: uuid.UUID | str) -> None:
+        self._cancelled[str(run_id)] = time.monotonic()
+        if len(self._cancelled) > 1000:
+            for key in sorted(self._cancelled, key=self._cancelled.get)[:200]:
+                self._cancelled.pop(key, None)
+
+    def is_cancelled(self, run_id: uuid.UUID | str) -> bool:
+        return str(run_id) in self._cancelled
 
     def unregister(self, run_id: uuid.UUID | str) -> Optional[ActiveJobInfo]:
         """Unregister a completed or terminated container."""
@@ -90,9 +103,10 @@ class ActiveContainerRegistry:
         cancelled, and cleans up the registration.
         """
         key = str(run_id)
+        self.mark_cancelled(key)
         job = self._jobs.get(key)
         if not job:
-            logger.warning("Attempted to cancel unknown or already stopped run_id: %s", key)
+            logger.warning("Cancel for run %s not registered here yet; tombstoned.", key)
             return False
 
         job.status = "cancelled"
@@ -105,7 +119,7 @@ class ActiveContainerRegistry:
 
         # 2. Issue `docker rm -f <container_name>`
         bin_path = engine_bin or shutil.which("docker") or shutil.which("podman") or "docker"
-        killed = False
+
         try:
             logger.info("Killing container %s via %s rm -f", container_name, bin_path)
             proc = await asyncio.create_subprocess_exec(
@@ -119,7 +133,7 @@ class ActiveContainerRegistry:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             if proc.returncode == 0:
                 logger.info("Container %s successfully removed.", container_name)
-                killed = True
+
             else:
                 logger.warning(
                     "Container engine returned code %d when removing %s: %s",
@@ -127,7 +141,7 @@ class ActiveContainerRegistry:
                     container_name,
                     stderr.decode(errors="replace"),
                 )
-                killed = True  # Considered killed/gone
+
         except asyncio.TimeoutError:
             logger.error("Timed out waiting for %s rm -f %s", bin_path, container_name)
         except Exception as exc:
@@ -174,6 +188,7 @@ class ActiveContainerRegistry:
     async def broadcast_cancel(self, run_id: uuid.UUID | str) -> bool:
         """Broadcast a cancellation request across Valkey to all worker daemons."""
         key = str(run_id)
+        self.mark_cancelled(key)
         # Cancel locally first if present
         local_cancelled = False
         if key in self._jobs:
@@ -234,6 +249,8 @@ class ActiveContainerRegistry:
                                 if isinstance(raw_data, str):
                                     data = json.loads(raw_data)
                                     target_run_id = data.get("run_id")
+                                    if target_run_id:
+                                        self.mark_cancelled(target_run_id)
                                     if target_run_id and target_run_id in self._jobs:
                                         logger.info(
                                             "Received cancel broadcast for locally managed run: %s",

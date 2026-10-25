@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import urllib.parse
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pentefino_api.activity import activity
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
-from pentefino_api.real_tools import run_real_nuclei
+from pentefino_api.real_tools import UnsafeScanRequest, run_real_nuclei
+from pentefino_api.scope_loader import evaluate_and_count, load_program_scope_engine
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import (
     BatchScanAssetSummary,
@@ -35,12 +41,16 @@ from pentefino_detection import (
     HardenedNucleiRunner,
 )
 from pentefino_detection.planner import EDGE_CDN_WAF_TAGS
-from pentefino_domain.enums import ImpactClass
+from pentefino_domain.enums import ImpactClass, ScopeState
 from pentefino_domain.models.asset import Asset
 from pentefino_domain.models.audit import AuditEvent
 from pentefino_domain.models.observation import Observation
+from pentefino_domain.models.program import Program
 from pentefino_domain.models.template import TemplateCatalog
 from pentefino_runner import EphemeralRunner
+from pentefino_scope.enums import PrecedenceTier
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -53,11 +63,32 @@ def _clean_asset_key(raw_key: str) -> str:
 
 
 async def _resolve_asset_and_techs(
-    session: AsyncSession, program_id: object, asset_key: str
+    session: AsyncSession, prog: Program, asset_key: str
 ) -> tuple[Asset, list[str], list[str]]:
+    """Look up (or register) the asset, re-checking scope with the program's engine every time.
+
+    The scope decision is never taken from the stored `scope_state` alone: rules or the
+    authorization snapshot may have changed since the asset was recorded.
+    """
     clean_key = _clean_asset_key(asset_key)
+    engine = await load_program_scope_engine(session, prog)
+    decision = evaluate_and_count(engine, clean_key)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Hard-Gate Fail-Closed: '{clean_key}' denied by scope engine "
+                f"({decision.matched_tier.value}: {decision.reason})."
+            ),
+        )
+    scope_state = (
+        ScopeState.IN_SCOPE_EXPLICIT.value
+        if decision.matched_tier == PrecedenceTier.EXPLICIT_ALLOW
+        else ScopeState.IN_SCOPE_DERIVED.value
+    )
+
     stmt = select(Asset).where(
-        Asset.program_id == program_id,
+        Asset.program_id == prog.id,
         Asset.canonical_key == clean_key,
     )
     res = await session.execute(stmt)
@@ -72,14 +103,16 @@ async def _resolve_asset_and_techs(
             atype = "domain" if "." in raw_val else "hostname"
 
         target_asset = Asset(
-            program_id=program_id,
+            program_id=prog.id,
             canonical_key=clean_key,
             asset_type=atype,
-            scope_state="in_scope_explicit",
+            scope_state=scope_state,
         )
         session.add(target_asset)
         await session.flush()
         await session.refresh(target_asset)
+    elif target_asset.scope_state != scope_state:
+        target_asset.scope_state = scope_state
 
     obs_stmt = select(Observation).where(
         Observation.asset_id == target_asset.id,
@@ -108,7 +141,7 @@ async def create_scan_plan(
     """Generate a dry-run DetectionPlan showing CDN tag pruning and safe template selection."""
     prog = await get_program_or_404(session, payload.program_slug)
     target_asset, raw_techs, pruned_tags = await _resolve_asset_and_techs(
-        session, prog.id, payload.asset_key
+        session, prog, payload.asset_key
     )
 
     planner = DetectionPlanner(db_session=session)
@@ -161,7 +194,7 @@ async def run_scan(
     """Plan and execute a hardened scan with WebSocket progress telemetry and graceful Docker fallback."""
     prog = await get_program_or_404(session, payload.program_slug)
     target_asset, raw_techs, pruned_tags = await _resolve_asset_and_techs(
-        session, prog.id, payload.asset_key
+        session, prog, payload.asset_key
     )
 
     if target_asset.scope_state not in ("in_scope_explicit", "in_scope_derived"):
@@ -211,13 +244,20 @@ async def run_scan(
         f"Dry-run scan plan completed with {plan.total_templates} safe_read_only templates."
     )
 
-    if requested_mode == "auto":
+    if requested_mode == "auto" and not plan.selected_template_ids:
+        status_str = "skipped_no_templates"
+        mode_executed = "not_executed"
+        msg = (
+            "Nenhum template safe_read_only corresponde às tecnologias do ativo; "
+            "nuclei não foi executado."
+        )
+    elif requested_mode == "auto":
         await scan_hub.broadcast(
             plan_id_str,
             {
                 "event": "runner_starting",
-                "stage": "HardenedNucleiRunner",
-                "message": "Dispatching ephemeral hardened Nuclei container via egress proxy guard.",
+                "stage": "NucleiCLI",
+                "message": "Dispatching nuclei with the planner's safe_read_only allowlist.",
                 "progress": 50,
             },
         )
@@ -235,27 +275,29 @@ async def run_scan(
             except Exception:
                 pass
 
+        activity.start(plan_id_str, "scan", prog.slug, target_asset.canonical_key)
         try:
             target_url = (
                 target_asset.canonical_key
                 if "://" in target_asset.canonical_key
                 else f"https://{target_asset.canonical_key}"
             )
-            raw_findings = await run_real_nuclei(
-                target_url=target_url,
-                template_ids=plan.selected_template_ids,
-                rate_limit=10,
-                broadcast_cb=_live_nuclei_cb,
-            )
+            try:
+                raw_findings = await run_real_nuclei(
+                    target_url=target_url,
+                    template_ids=plan.selected_template_ids,
+                    rate_limit=10,
+                    broadcast_cb=_live_nuclei_cb,
+                    run_id=plan_id_str,
+                )
+            except FileNotFoundError:
+                # nuclei CLI missing on host/WSL: use the hardened container runner instead.
+                runner = EphemeralRunner()
+                nuclei_runner = HardenedNucleiRunner(runner=runner, rate_limit=10)
+                raw_findings = await nuclei_runner.execute_scan(plan=plan)
 
-            if not raw_findings:
-                # Fallback to ephemeral runner if real nuclei found nothing
-                try:
-                    runner = EphemeralRunner()
-                    nuclei_runner = HardenedNucleiRunner(runner=runner, rate_limit=10)
-                    raw_findings = await nuclei_runner.execute_scan(plan=plan)
-                except Exception:
-                    pass
+            if activity.is_cancelled(plan_id_str):
+                raise asyncio.CancelledError()
 
             normalizer = FindingNormalizer(db_session=session)
             persisted = await normalizer.normalize_and_persist(
@@ -279,16 +321,27 @@ async def run_scan(
             status_str = "completed"
             mode_executed = "real_cli"
             msg = (
-                f"Executados {plan.total_templates} templates de detecção cirúrgica; "
+                f"Executados {min(plan.total_templates, 20)} templates de detecção cirúrgica; "
                 f"{len(persisted_findings_data)} falha(s) identificada(s)."
             )
+        except asyncio.CancelledError:
+            status_str = "cancelled"
+            mode_executed = "real_cli"
+            msg = "Varredura cancelada pelo operador."
+        except UnsafeScanRequest as exc:
+            status_str = "refused"
+            mode_executed = "not_executed"
+            msg = f"Varredura recusada: {exc}"
         except Exception as exc:
-            status_str = "dry_run_completed"
-            mode_executed = "dry_run_fallback"
+            logger.exception("Scan %s failed", plan_id_str)
+            status_str = "failed"
+            mode_executed = "not_executed"
             msg = (
-                f"Runtime de varredura indisponível ({type(exc).__name__}); "
-                f"concluído em modo de simulação com {plan.total_templates} templates."
+                f"Runtime de varredura indisponível ({type(exc).__name__}: {exc}); "
+                "nenhum template foi executado."
             )
+        finally:
+            activity.finish(plan_id_str)
     elif requested_mode in ("async", "queue", "queued"):
         from pentefino_worker.publisher import default_publisher
 
@@ -386,6 +439,26 @@ async def run_batch_scans(
     )
     in_scope_assets = (await session.execute(stmt)).scalars().all()
 
+    # Re-check every stored asset against the current rules before any packet is sent
+    # (the L7 canary below already talks to the target).
+    engine = await load_program_scope_engine(session, prog)
+    denied_summaries: list[BatchScanAssetSummary] = []
+    allowed_assets: list[Asset] = []
+    for a in in_scope_assets:
+        if evaluate_and_count(engine, a.canonical_key).allowed:
+            allowed_assets.append(a)
+        else:
+            denied_summaries.append(
+                BatchScanAssetSummary(
+                    asset_key=a.canonical_key,
+                    matched_technologies=[],
+                    total_templates=0,
+                    findings_count=0,
+                    status="denied_by_scope",
+                )
+            )
+    in_scope_assets = allowed_assets
+
     if not in_scope_assets:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -414,7 +487,7 @@ async def run_batch_scans(
     sem = asyncio.Semaphore(concurrency_limit)
     total_templates_executed = 0
     total_findings_discovered = 0
-    asset_summaries: list[BatchScanAssetSummary] = []
+    asset_summaries: list[BatchScanAssetSummary] = list(denied_summaries)
     lock = asyncio.Lock()
 
     async def _scan_single_asset(idx: int, asset: Asset) -> BatchScanAssetSummary:
@@ -435,8 +508,11 @@ async def run_batch_scans(
                     asset_summaries.append(summary)
                 return summary
 
-            # 2. Canary Probe L7
-            is_acc, lat, status_code, is_waf, reason = await probe_domain_l7_canary(domain_key)
+            # 2. Canary Probe L7 (sends a real request, so only for live runs, never dry_run)
+            if payload.mode == "auto":
+                is_acc, lat, status_code, is_waf, reason = await probe_domain_l7_canary(domain_key)
+            else:
+                is_acc, lat, status_code, is_waf, reason = False, 0.0, None, False, "dry_run"
             if is_waf:
                 circuit_breaker.trip_domain(domain_key, reason=reason, cooldown_seconds=60.0)
                 await scan_hub.broadcast(
@@ -475,7 +551,7 @@ async def run_batch_scans(
             try:
                 async with get_async_session() as worker_session:
                     worker_target_asset, raw_techs, _ = await _resolve_asset_and_techs(
-                        worker_session, prog.id, domain_key
+                        worker_session, prog, domain_key
                     )
                     worker_planner = DetectionPlanner(db_session=worker_session)
                     plan = await worker_planner.create_plan(
@@ -530,6 +606,7 @@ async def run_batch_scans(
                             rate_limit=worker_rate_limit,
                             flags=payload.nuclei_flags,
                             broadcast_cb=_live_batch_nuclei_cb,
+                            run_id=batch_run_id,
                         )
 
                         if raw_findings:
@@ -574,7 +651,11 @@ async def run_batch_scans(
 
     # Execute up to 5 concurrent domain tasks
     tasks = [_scan_single_asset(i, a) for i, a in enumerate(in_scope_assets)]
-    await asyncio.gather(*tasks)
+    activity.start(batch_run_id, "batch_scan", prog.slug, f"{len(in_scope_assets)} assets")
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        activity.finish(batch_run_id)
 
     await record_api_audit(
         session=session,
@@ -679,14 +760,18 @@ async def cancel_scan(
 
     clean_run_id = str(run_id).strip()
     try:
-        parsed_uuid = uuid.UUID(clean_run_id)
+        object_id: uuid.UUID | str = uuid.UUID(clean_run_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid UUID format: '{clean_run_id}'",
-        )
+        if not re.fullmatch(r"(batch|recon)-[a-z0-9-]{4,40}", clean_run_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid UUID format (or batch-/recon- id): '{clean_run_id}'",
+            )
+        object_id = clean_run_id
 
-    # 1. Trigger cancellation locally and broadcast via Valkey
+    # 1. Kill processes this API spawned for the run (tombstoned if not started yet),
+    #    then broadcast to worker daemons via Valkey.
+    was_running_here = activity.cancel(clean_run_id)
     await default_container_registry.broadcast_cancel(clean_run_id)
 
     # 2. Record API audit event
@@ -694,8 +779,8 @@ async def cancel_scan(
         session=session,
         event_type="api.scan.cancel",
         object_type="scan_run",
-        object_id=parsed_uuid,
-        payload={"status": "cancelled", "run_id": clean_run_id},
+        object_id=object_id,
+        payload={"status": "cancelled", "run_id": clean_run_id, "was_running_here": was_running_here},
     )
 
     # 3. Broadcast to WebSocket telemetry hub
@@ -714,6 +799,7 @@ async def cancel_scan(
     return {
         "status": "cancelled",
         "run_id": clean_run_id,
+        "was_running_here": was_running_here,
         "message": f"Cancellation signal dispatched for scan run {clean_run_id}.",
     }
 

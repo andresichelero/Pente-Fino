@@ -209,7 +209,7 @@ class ScanRunRequest(BaseModel):
 
     plan_id: str | None = None
     program_slug: str
-    asset_key: str
+    asset_key: str = Field(min_length=1, max_length=2048)
     severity: str | None = None
     tags: str | None = None
     mode: str = "auto"
@@ -247,7 +247,9 @@ class ReconRunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     program_slug: str
-    domain: str
+    domain: str = Field(min_length=1, max_length=253)
+    # Optional client-chosen id so the caller can subscribe to /ws/scans/{task_id} before starting.
+    task_id: str | None = Field(default=None, pattern=r"^recon-[a-z0-9-]{4,40}$")
     bruteforce: bool = False
     subfinder_flags: dict[str, Any] = Field(default_factory=dict)
     dnsx_flags: dict[str, Any] = Field(default_factory=dict)
@@ -257,6 +259,7 @@ class ReconRunRequest(BaseModel):
 
 
 class ReconRunResponse(BaseModel):
+    task_id: str | None = None
     domain: str
     program_slug: str
     total_discovered: int
@@ -274,10 +277,10 @@ class BatchScanRequest(BaseModel):
     program_slug: str
     severity: str | None = None
     tags: str | None = None
-    rate_limit: int = 10
-    concurrency: int = 5
+    rate_limit: int = Field(default=10, ge=1, le=15)
+    concurrency: int = Field(default=5, ge=1, le=5)
     mode: str = "auto"
-    max_assets: int = 100
+    max_assets: int = Field(default=100, ge=1, le=500)
     nuclei_flags: dict[str, Any] = Field(default_factory=dict)
 
 

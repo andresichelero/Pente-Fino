@@ -8,11 +8,12 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import func, select
 
-from pentefino_api.network_monitor import get_network_health_metrics
-from pentefino_domain.models.audit import AuditEvent
-from pentefino_domain.session import check_db_available, get_async_session
+from pentefino_api.live_status import collect_proxy_traffic, get_live_status, valkey_client
+from pentefino_api.telemetry_series import record_sample
+
+PROXY_EVENTS_CHANNEL = "pentefino:events:proxy"
+STATUS_PUSH_INTERVAL_S = float(os.getenv("PENTEFINO_STATUS_PUSH_INTERVAL", "5"))
 
 router = APIRouter(tags=["websockets"])
 
@@ -144,36 +145,6 @@ async def ws_scan_telemetry(websocket: WebSocket, plan_id: str) -> None:
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                 )
-            elif cmd == "simulate":
-                steps = [
-                    {
-                        "event": "planner_pruning",
-                        "stage": "DetectionPlanner",
-                        "message": "Pruned generic CDN/WAF tags (cloudflare, akamai); retained safe_read_only templates.",
-                        "progress": 25,
-                    },
-                    {
-                        "event": "container_init",
-                        "stage": "HardenedNucleiRunner",
-                        "message": "Launching ephemeral container (--read-only, --cap-drop=ALL, --network=egress_net, HTTP_PROXY=http://mitmproxy:8080).",
-                        "progress": 50,
-                    },
-                    {
-                        "event": "template_execution",
-                        "stage": "HardenedNucleiRunner",
-                        "message": "Executing safe_read_only nuclei templates at 0.5 req/sec token-bucket rate limit.",
-                        "progress": 80,
-                    },
-                    {
-                        "event": "scan_completed",
-                        "stage": "FindingNormalizer",
-                        "message": "Normalized JSONL output and verified SHA-256 evidence digests.",
-                        "progress": 100,
-                    },
-                ]
-                for step in steps:
-                    await scan_hub.broadcast(plan_id, step)
-                    await asyncio.sleep(0.05)
             else:
                 await websocket.send_json(
                     {
@@ -195,10 +166,61 @@ async def ws_scan_telemetry(websocket: WebSocket, plan_id: str) -> None:
 
 
 
+def _configured_limits() -> dict[str, Any]:
+    return {
+        "source": "environment",
+        "rate_limit_host_rps": float(os.getenv("RATE_LIMIT_HOST_RPS", "0.5")),
+        "rate_limit_program_rps": float(os.getenv("RATE_LIMIT_PROGRAM_RPS", "2.0")),
+    }
+
+
+async def _proxy_tick() -> dict[str, Any]:
+    client = valkey_client()
+    try:
+        traffic = await collect_proxy_traffic(client)
+    finally:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+    return {
+        "event": "telemetry_tick",
+        "channel": "proxy_telemetry",
+        "configured_limits": _configured_limits(),
+        "traffic": traffic,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _proxy_event_relay(websocket: WebSocket) -> None:
+    """Relay real proxy decisions published by pentefino_proxy on Valkey."""
+    try:
+        import redis.asyncio as aioredis
+
+        valkey_url = os.getenv("VALKEY_URL") or os.getenv("REDIS_URL") or "redis://127.0.0.1:6379/0"
+        client = aioredis.from_url(valkey_url, decode_responses=True, socket_connect_timeout=2.0)
+        async with client:
+            pubsub = client.pubsub()
+            await pubsub.subscribe(PROXY_EVENTS_CHANNEL)
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message" and isinstance(msg.get("data"), str):
+                    try:
+                        await websocket.send_json({"event": "http_egress", **json.loads(msg["data"])})
+                    except json.JSONDecodeError:
+                        pass
+                await asyncio.sleep(0.02)
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @router.websocket("/ws/proxy/live")
 async def ws_proxy_telemetry(websocket: WebSocket) -> None:
-    """Stream real-time Egress Proxy Guard & rate-limiting telemetry."""
+    """Stream egress-proxy decisions and counters. Only events the proxy actually published."""
     await websocket.accept()
+    relay = asyncio.create_task(_proxy_event_relay(websocket))
     try:
         await websocket.send_json(
             {
@@ -207,112 +229,11 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
-
-        # Query audit count once upon connection only if DB is reachable
-        audit_count = 0
-        if await check_db_available():
-            try:
-                async with get_async_session() as session:
-                    stmt = select(func.count()).select_from(AuditEvent)
-                    res = await session.execute(stmt)
-                    audit_count = int(res.scalar_one() or 0)
-            except Exception:
-                audit_count = 0
-
-        await websocket.send_json(
-            {
-                "event": "telemetry_tick",
-                "rate_limit_rps": 10.0,
-                "burst_capacity": 5,
-                "mode": "fail-closed",
-                "cloaking": "desktop-ua-rotation",
-                "ssrf_guard": "active (RFC1918 + IMDSv2 169.254.169.254 blocked)",
-                "dns_rebinding_protection": "enforced",
-                "audit_events_logged": audit_count,
-                "network": get_network_health_metrics(),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-        # Broadcast live & recent HTTP egress traffic events
-        sample_traffic = [
-            {
-                "event": "http_egress",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": "GET",
-                "url": "https://www.docq.app/",
-                "host": "www.docq.app",
-                "status": 200,
-                "verdict": "ALLOWED",
-                "tier": "EXPLICIT_ALLOW",
-                "rate_limit": "0.50 req/s",
-                "user_agent": "Mozilla/5.0 [Cloaked]",
-                "redacted_headers": ["Authorization: [REDACTED]", "CF-RAY: [FILTERED]"],
-                "sha256": "7a91bf3e028b4c09d765893e32b001fc93",
-            },
-            {
-                "event": "http_egress",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": "POST",
-                "url": "https://demo.testfire.net/login.jsp",
-                "host": "demo.testfire.net",
-                "status": 200,
-                "verdict": "ALLOWED",
-                "tier": "EXPLICIT_ALLOW",
-                "rate_limit": "0.50 req/s",
-                "user_agent": "Mozilla/5.0 [Cloaked]",
-                "redacted_headers": ["Cookie: [REDACTED]"],
-                "sha256": "a61ceea7e65ec881afaac1265838ab47cbc",
-            },
-            {
-                "event": "http_egress",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": "POST",
-                "url": "http://127.0.0.1:8088/vulnerabilities/exec/",
-                "host": "127.0.0.1:8088",
-                "status": 200,
-                "verdict": "ALLOWED",
-                "tier": "EXPLICIT_ALLOW",
-                "rate_limit": "0.50 req/s",
-                "user_agent": "PenteFino-SecScanner/2.1",
-                "redacted_headers": ["Cookie: [REDACTED]"],
-                "sha256": "e8b087558c2561ff6511b55f6e0a9155787",
-            },
-            {
-                "event": "http_egress",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": "GET",
-                "url": "http://169.254.169.254/latest/meta-data/",
-                "host": "169.254.169.254",
-                "status": 403,
-                "verdict": "BLOCKED_SSRF",
-                "tier": "T1_SSRF_GUARD",
-                "rate_limit": "0.00 req/s",
-                "user_agent": "PenteFino-EgressGuard",
-                "redacted_headers": ["Blocked Cloud Metadata IMDSv2 Exfiltration"],
-                "sha256": "00000000000000000000000000000000000",
-            },
-            {
-                "event": "http_egress",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "method": "POST",
-                "url": "https://demo.testfire.net/bank/customize.aspx",
-                "host": "demo.testfire.net",
-                "status": 403,
-                "verdict": "BLOCKED_SCOPE",
-                "tier": "T3_PATH_PORT_DENY",
-                "rate_limit": "0.00 req/s",
-                "user_agent": "PenteFino-EgressGuard",
-                "redacted_headers": ["Out-of-scope path denied by policy"],
-                "sha256": "00000000000000000000000000000000000",
-            },
-        ]
-        for t_ev in sample_traffic:
-            await websocket.send_json(t_ev)
+        await websocket.send_json(await _proxy_tick())
 
         while True:
             try:
-                msg = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
                 if msg.strip().lower() == "ping":
                     await websocket.send_json(
                         {
@@ -322,32 +243,43 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
                         }
                     )
                 else:
-                    await websocket.send_json(
-                        {
-                            "event": "telemetry_tick",
-                            "rate_limit_rps": 10.0,
-                            "burst_capacity": 5,
-                            "mode": "fail-closed",
-                            "cloaking": "desktop-ua-rotation",
-                            "ssrf_guard": "active",
-                            "audit_events_logged": audit_count,
-                            "network": get_network_health_metrics(),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
+                    await websocket.send_json(await _proxy_tick())
             except asyncio.TimeoutError:
-                await websocket.send_json(
-                    {
-                        "event": "telemetry_tick",
-                        "rate_limit_rps": 10.0,
-                        "burst_capacity": 5,
-                        "mode": "fail-closed",
-                        "cloaking": "desktop-ua-rotation",
-                        "ssrf_guard": "active",
-                        "audit_events_logged": audit_count,
-                        "network": get_network_health_metrics(),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+                await websocket.send_json(await _proxy_tick())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        relay.cancel()
+        try:
+            await relay
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@router.websocket("/ws/status")
+async def ws_live_status(websocket: WebSocket) -> None:
+    """Push a live status snapshot every STATUS_PUSH_INTERVAL_S seconds.
+
+    Clients may send "refresh" to get an immediate snapshot or "ping" for a pong.
+    """
+    await websocket.accept()
+
+    async def _push(force: bool = False) -> None:
+        snap = await get_live_status(force=force)
+        record_sample(snap)
+        await websocket.send_json({"event": "status", "interval_s": STATUS_PUSH_INTERVAL_S, "data": snap})
+
+    try:
+        await _push()
+        while True:
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=STATUS_PUSH_INTERVAL_S)
+                cmd = msg.strip().lower()
+                if cmd == "ping":
+                    await websocket.send_json({"event": "pong", "timestamp": datetime.now(timezone.utc).isoformat()})
+                elif cmd == "refresh":
+                    await _push(force=True)
+            except asyncio.TimeoutError:
+                await _push()
     except WebSocketDisconnect:
         pass

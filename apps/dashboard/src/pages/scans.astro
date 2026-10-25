@@ -1,43 +1,12 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
-import LiveScanRunner from "../components/islands/LiveScanRunner";
-import {
-  API_BASE_URL,
-  WS_BASE_URL,
-  fetchPrograms,
-  fetchAssets,
-  fetchScanHistory,
-} from "../lib/api";
-
-const programs = await fetchPrograms();
-const querySlug = Astro.url.searchParams.get("program");
-const activeSlug =
-  querySlug && programs.some((p) => p.slug === querySlug)
-    ? querySlug
-    : programs[0]?.slug || "";
-
-const [assets, scanHistory] = await Promise.all([
-  fetchAssets(activeSlug),
-  fetchScanHistory(),
-]);
-
-const cdnProviders = ["cloudflare", "akamai", "fastly", "incapsula", "sucuri", "cloudfront", "imperva", "ddos-guard"];
+import ScansConsole from "../components/islands/ScansConsole.tsx";
 ---
 
 <BaseLayout
-  title="Varreduras"
-  activeNav="scans"
+  title="Scans e recon"
+  lead="Rode descoberta e varreduras cirúrgicas. A saída das ferramentas chega ao vivo; nada é executado fora do escopo."
+  active="scans"
 >
-  <!-- Interactive Island: LiveScanRunner -->
-  <section>
-    <LiveScanRunner
-      client:load
-      programs={programs}
-      initialSlug={activeSlug}
-      initialAssets={assets}
-      scanHistory={scanHistory}
-      apiBaseUrl={API_BASE_URL}
-      wsBaseUrl={WS_BASE_URL}
-    />
-  </section>
+  <ScansConsole client:only="preact" />
 </BaseLayout>

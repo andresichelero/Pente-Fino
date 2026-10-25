@@ -42,3 +42,12 @@ pythonpath = [
     "apps/proxy",
     "apps/worker",
 ]
+
+[tool.ruff.lint]
+# Same rule set the baseline audit ran with (ruff defaults without a project config).
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Windows event-loop policy and dotenv must be configured before the app imports.
+"apps/api/pentefino_api/main.py" = ["E402"]
+"apps/cli/pentefino_cli/main.py" = ["E402"]

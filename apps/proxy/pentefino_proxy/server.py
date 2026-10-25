@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import urllib.parse
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import UUID
 
 import aiohttp
@@ -13,6 +13,7 @@ from pentefino_scope import PrecedenceTier, ScopeDecision
 
 from .cloaking import CloakingEngine
 from .evidence_tap import EvidenceRecord, EvidenceTap
+from .metrics import ProxyMetrics, redact_url
 from .passive_analyzer import PassiveFinding, PassiveResponseAnalyzer
 from .rate_limiter import ValkeyRateLimiter
 from .s3_client import S3EvidenceClient
@@ -80,6 +81,8 @@ class ForwardProxyServer:
         environment_class: str = "bounty",
         async_session_factory: Optional[Callable[[], Any]] = None,
         passive_analyzer: Optional[PassiveResponseAnalyzer] = None,
+        metrics: Optional[ProxyMetrics] = None,
+        max_body_bytes: int = 10 * 1024 * 1024,
     ):
         self.host = host
         self.port = port
@@ -92,6 +95,8 @@ class ForwardProxyServer:
         self.cloaking_engine = cloaking_engine or CloakingEngine()
         self.evidence_tap = evidence_tap or EvidenceTap(s3_client=s3_client)
         self.passive_analyzer = passive_analyzer if passive_analyzer is not None else PassiveResponseAnalyzer()
+        self.metrics = metrics if metrics is not None else ProxyMetrics(valkey_url)
+        self.max_body_bytes = max_body_bytes
 
         self._server: Optional[asyncio.AbstractServer] = None
         self._is_running = False
@@ -176,7 +181,11 @@ class ForwardProxyServer:
             )
 
         if not decision.allowed:
-            logger.warning("Request rejected by Scope Guard: %s -> %s", url, decision.reason)
+            logger.warning("Request rejected by Scope Guard: %s -> %s", redact_url(url), decision.reason)
+            await self.metrics.record(
+                method=method_upper, url=url, allowed=False, reason=decision.reason,
+                tier=(decision.matched_tier.value if hasattr(decision.matched_tier, "value") else str(decision.matched_tier)), status_code=403,
+            )
             resp_payload = ScopeGuard.build_403_response(decision, url)
             body_bytes = json.dumps(resp_payload["body"], indent=2).encode("utf-8")
             return ProxyResult(
@@ -244,12 +253,17 @@ class ForwardProxyServer:
                     await self.rate_limiter.set_backoff(target_host, backoff_val)
 
         except Exception as ex:
-            logger.error("Upstream request to %s failed: %s", url, ex)
+            logger.error("Upstream request to %s failed: %s", redact_url(url), ex)
             status_code = 502
             resp_body = json.dumps({"error": "Bad Gateway", "detail": str(ex)}).encode("utf-8")
             resp_headers = {"Content-Type": "application/json"}
 
         latency_ms = (time.monotonic() - start_time) * 1000.0
+        await self.metrics.record(
+            method=method_upper, url=url, allowed=True, reason=decision.reason,
+            tier=(decision.matched_tier.value if hasattr(decision.matched_tier, "value") else str(decision.matched_tier)), status_code=status_code,
+            latency_ms=latency_ms, rate_limit_wait_s=wait_seconds,
+        )
 
         # -----------------------------------------------------------------
         # 5. Evidence Tapping (Sanitization & Dual Hash)
@@ -281,7 +295,7 @@ class ForwardProxyServer:
                     program_id=prog_id,
                 )
             except Exception as e:
-                logger.warning("Passive response analysis failed for %s: %s", url, e)
+                logger.warning("Passive response analysis failed for %s: %s", redact_url(url), e)
 
         return ProxyResult(
             status_code=status_code,
@@ -346,6 +360,10 @@ class ForwardProxyServer:
             # Case B: Standard Forward HTTP Request
             # -------------------------------------------------------------
             body_bytes = b""
+            if content_length > self.max_body_bytes:
+                writer.write(b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
             if content_length > 0:
                 body_bytes = await reader.readexactly(content_length)
 
@@ -438,6 +456,10 @@ class ForwardProxyServer:
 
         if not decision.allowed:
             logger.warning("CONNECT tunnel to %s rejected: %s", target_hostport, decision.reason)
+            await self.metrics.record(
+                method="CONNECT", url=url, allowed=False, reason=decision.reason,
+                tier=(decision.matched_tier.value if hasattr(decision.matched_tier, "value") else str(decision.matched_tier)), status_code=403,
+            )
             resp = ScopeGuard.build_403_response(decision, url)
             body_bytes = json.dumps(resp["body"]).encode("utf-8")
             payload = (
@@ -454,6 +476,11 @@ class ForwardProxyServer:
             client_writer.close()
             await client_writer.wait_closed()
             return
+
+        await self.metrics.record(
+            method="CONNECT", url=url, allowed=True, reason=decision.reason,
+            tier=(decision.matched_tier.value if hasattr(decision.matched_tier, "value") else str(decision.matched_tier)), status_code=200,
+        )
 
         # 2. Rate Limiting Check
         await self.rate_limiter.acquire_lease(
@@ -520,6 +547,7 @@ class ForwardProxyServer:
         # In case port was 0, retrieve assigned port
         if self._server.sockets:
             self.port = self._server.sockets[0].getsockname()[1]
+        self.metrics.start_heartbeat()
         logger.info("PenteFino Forward Proxy listening on %s:%d", self.host, self.port)
 
     async def stop(self) -> None:
@@ -535,4 +563,5 @@ class ForwardProxyServer:
             self._http_session = None
 
         await self.rate_limiter.close()
+        await self.metrics.close()
         logger.info("PenteFino Forward Proxy stopped")

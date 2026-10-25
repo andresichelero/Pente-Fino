@@ -17,6 +17,8 @@ from pentefino_intel.enricher import (
 
 router = APIRouter(prefix="/api/v1/intel", tags=["intel"])
 
+_LAST_SYNC: dict[str, Any] = {}
+
 
 class IntelSyncResponse(BaseModel):
     """Response payload for threat intelligence feed synchronization."""
@@ -38,7 +40,10 @@ class IntelStatusResponse(BaseModel):
     cisa_kev_baseline_count: int
     epss_version: str = "v4"
     osv_enabled: bool = True
-    synced_at: str
+    # None until /intel/sync has actually run in this API process.
+    synced_at: str | None = None
+    last_sync_source: str | None = None
+    last_sync_kev_count: int | None = None
 
 
 async def perform_intel_sync(
@@ -95,6 +100,7 @@ async def sync_threat_intel(
 ) -> IntelSyncResponse:
     """Synchronize CISA KEV and EPSS threat intelligence feeds."""
     result = await perform_intel_sync(offline=offline)
+    _LAST_SYNC.update(result)
     return IntelSyncResponse(**result)
 
 
@@ -111,5 +117,7 @@ async def get_threat_intel_status() -> IntelStatusResponse:
         cisa_kev_baseline_count=len(BASELINE_CISA_KEV_CVES),
         epss_version="v4",
         osv_enabled=True,
-        synced_at=datetime.now(timezone.utc).isoformat(),
+        synced_at=_LAST_SYNC.get("synced_at"),
+        last_sync_source=_LAST_SYNC.get("source"),
+        last_sync_kev_count=_LAST_SYNC.get("kev_count"),
     )

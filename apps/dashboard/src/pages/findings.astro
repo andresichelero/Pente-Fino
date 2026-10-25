@@ -1,82 +1,12 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
-import FindingTriageBoard from "../components/islands/FindingTriageBoard";
-import { API_BASE_URL, fetchPrograms, fetchFindings } from "../lib/api";
-
-const [programs, findings] = await Promise.all([
-  fetchPrograms(),
-  fetchFindings(),
-]);
-
-const countCandidate = findings.filter((f) => f.status === "candidate").length;
-const countValidated = findings.filter((f) => f.status === "validated").length;
-const countReported = findings.filter(
-  (f) => f.status === "reported" || f.status === "accepted"
-).length;
-const countE2Plus = findings.filter(
-  (f) => f.evidence_level === "E2" || f.evidence_level === "E3"
-).length;
-const total = Math.max(1, findings.length);
+import Findings from "../components/islands/Findings.tsx";
 ---
 
 <BaseLayout
   title="Achados"
-  activeNav="findings"
+  lead="Classifique o que foi encontrado. O estado começa em candidato e avança conforme você valida ou descarta."
+  active="findings"
 >
-  <!-- Compact 4-Column Status & Evidence Strip -->
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">CANDIDATE (E0/E1)</span>
-        <span class="font-mono text-[10px] text-[#fbbf24]">PENDING PROOF</span>
-      </div>
-      <div class="kpi text-[#fbbf24]">{countCandidate}</div>
-      <div class="bar text-[#fbbf24]">
-        <span style={`width: ${Math.max(4, Math.round((countCandidate / total) * 100))}%`}></span>
-      </div>
-    </div>
-
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">VALIDATED (E2/E3)</span>
-        <span class="font-mono text-[10px] text-[#34d399]">VERIFIED</span>
-      </div>
-      <div class="kpi text-[#34d399]">{countValidated}</div>
-      <div class="bar text-[#34d399]">
-        <span style={`width: ${Math.max(4, Math.round((countValidated / total) * 100))}%`}></span>
-      </div>
-    </div>
-
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">REPORTED / ACCEPTED</span>
-        <span class="font-mono text-[10px] text-[#22d3ee]">BOUNTY</span>
-      </div>
-      <div class="kpi text-[#22d3ee]">{countReported}</div>
-      <div class="bar text-[#22d3ee]">
-        <span style={`width: ${Math.max(4, Math.round((countReported / total) * 100))}%`}></span>
-      </div>
-    </div>
-
-    <div class="card card-pad space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="card-title">EVIDÊNCIAS E2+</span>
-        <span class="font-mono text-[10px] text-[#a78bfa]">S3</span>
-      </div>
-      <div class="kpi text-[#a78bfa]">{countE2Plus}</div>
-      <div class="bar text-[#a78bfa]">
-        <span style={`width: ${Math.max(4, Math.round((countE2Plus / total) * 100))}%`}></span>
-      </div>
-    </div>
-  </section>
-
-  <!-- Interactive Island: FindingTriageBoard -->
-  <section>
-    <FindingTriageBoard
-      client:load
-      programs={programs}
-      initialFindings={findings}
-      apiBaseUrl={API_BASE_URL}
-    />
-  </section>
+  <Findings client:only="preact" />
 </BaseLayout>

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from fastapi.testclient import TestClient
@@ -33,7 +33,7 @@ from typer.testing import CliRunner
 from pentefino_api.main import create_app
 from pentefino_cli.main import app as cli_app
 from pentefino_detection.normalizer import FindingNormalizer
-from pentefino_detection.planner import DetectionPlan, DetectionPlanner
+from pentefino_detection.planner import DetectionPlanner
 from pentefino_domain.enums import ImpactClass
 from pentefino_domain.models.finding import Finding
 from pentefino_domain.models.template import TemplateCatalog
