@@ -243,6 +243,55 @@ class ScanHistoryItem(BaseModel):
 
 
 
+class ReconRunRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    program_slug: str
+    domain: str
+    bruteforce: bool = False
+
+
+class ReconRunResponse(BaseModel):
+    domain: str
+    program_slug: str
+    total_discovered: int
+    in_scope_count: int
+    out_of_scope_count: int
+    resolved_count: int
+    live_http_count: int
+    sample_assets: list[str] = Field(default_factory=list)
+    message: str
+
+
+class BatchScanRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    program_slug: str
+    severity: str | None = None
+    tags: str | None = None
+    rate_limit: int = 50
+    mode: str = "auto"
+    max_assets: int = 50
+
+
+class BatchScanAssetSummary(BaseModel):
+    asset_key: str
+    matched_technologies: list[str] = Field(default_factory=list)
+    total_templates: int
+    findings_count: int = 0
+    status: str
+
+
+class BatchScanResponse(BaseModel):
+    program_slug: str
+    total_assets_scanned: int
+    total_templates_executed: int
+    total_findings_discovered: int
+    rate_limit_enforced: str
+    assets: list[BatchScanAssetSummary] = Field(default_factory=list)
+    message: str
+
+
 class EvidenceItemSchema(BaseModel):
     id: str
     run_id: str

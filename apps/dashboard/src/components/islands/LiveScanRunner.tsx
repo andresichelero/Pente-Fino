@@ -42,6 +42,8 @@ export default function LiveScanRunner({
 
   // Stage 2: Scan Execution & WebSocket console state
   const [runningScan, setRunningScan] = useState<boolean>(false);
+  const [runningRecon, setRunningRecon] = useState<boolean>(false);
+  const [runningBatch, setRunningBatch] = useState<boolean>(false);
   const [scanProgress, setScanProgress] = useState<number>(0);
   const [scanResult, setScanResult] = useState<any | null>(null);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
@@ -264,7 +266,88 @@ export default function LiveScanRunner({
     setRunningScan(false);
   }
 
-  const stageLabel = runningScan
+  // Stage 0: Run Subfinder + dnsx + httpx Reconnaissance Pipeline
+  async function handleRunRecon() {
+    if (!programSlug) return;
+    const cleanDomain = assetKey.trim().replace(/^https?:\/\//i, "").split("/")[0] || programSlug;
+    setRunningRecon(true);
+    setScanProgress(20);
+    appendLog(`[RECON] Iniciando ReconPipeline (Subfinder -> dnsx -> httpx) para '${cleanDomain}'...`);
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/recon/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          program_slug: programSlug,
+          domain: cleanDomain,
+          bruteforce: false,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScanProgress(100);
+        appendLog(`[RECON:SUCCESS] ${data.message}`);
+        appendLog(`[RECON] ${data.total_discovered} subdomínios descobertos (${data.in_scope_count} em escopo, ${data.out_of_scope_count} fora de escopo).`);
+        await fetchProgramAssets(programSlug);
+        await fetchHistory();
+        setRunningRecon(false);
+        return;
+      } else {
+        appendLog(`[ERRO] API retornou erro ${res.status} ao executar reconhecimento.`);
+      }
+    } catch (err: any) {
+      appendLog(`[ERRO] Falha ao comunicar com pipeline de reconhecimento: ${err?.message || "conexão recusada"}`);
+    }
+    setRunningRecon(false);
+  }
+
+  // Stage 3: Batch Surgical Scanning across ALL in-scope assets
+  async function handleRunBatchScan() {
+    if (!programSlug) return;
+    setRunningBatch(true);
+    setScanProgress(10);
+    const sevString = selectedSeverities.join(",");
+    appendLog(`[BATCH-RUN] Disparando varredura cirúrgica em lote para todos os ativos em escopo de '${programSlug}' (rate-limit: 50 req/s, WAF-pruning ativo)...`);
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/scans/batch-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          program_slug: programSlug,
+          severity: sevString || null,
+          tags: tagsFilter.trim() || null,
+          rate_limit: 50,
+          mode: runMode,
+          max_assets: 50,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScanProgress(100);
+        appendLog(`[BATCH:SUCCESS] ${data.message}`);
+        appendLog(`[BATCH] Ativos escaneados: ${data.total_assets_scanned} | Templates executadas: ${data.total_templates_executed} | Falhas encontradas: ${data.total_findings_discovered}`);
+        for (const item of (data.assets || []).slice(0, 10)) {
+          appendLog(` -> [${item.asset_key}] Techs: [${(item.matched_technologies || []).join(", ") || "generic"}] | ${item.total_templates} templates -> ${item.findings_count} findings (${item.status})`);
+        }
+        await fetchHistory();
+        setRunningBatch(false);
+        return;
+      } else {
+        appendLog(`[ERRO] API retornou erro ${res.status} ao executar varredura em lote.`);
+      }
+    } catch (err: any) {
+      appendLog(`[ERRO] Falha ao comunicar com executor de varreduras em lote: ${err?.message || "conexão recusada"}`);
+    }
+    setRunningBatch(false);
+  }
+
+  const stageLabel = runningRecon
+    ? "Descobrindo subdomínios (Subfinder -> dnsx -> httpx)..."
+    : runningBatch
+    ? "Executando varredura cirúrgica em lote nos ativos em escopo..."
+    : runningScan
     ? "Executando varredura no site..."
     : scanResult
     ? "Varredura concluída · Resultados prontos"
@@ -441,6 +524,38 @@ export default function LiveScanRunner({
           </div>
         </div>
       </form>
+
+      {/* Pipeline Automation Toolbar (Reconnaissance + Multi-Target Batch Scan) */}
+      <div class="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-lg bg-[#0d1117] border border-[#1b2230]">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-white">Pipeline Automatizado:</span>
+          <span class="pill pill-cyan font-mono">{assets.length} ativos em escopo</span>
+          <span class="text-[11px] text-[#7d8590]">rate-limit: 50 req/s · WAF pruning ativo</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRunRecon}
+            disabled={runningRecon || runningBatch || runningScan}
+            class="btn btn-sm btn-ghost border border-[#2d3748] hover:border-cyan-500 text-cyan-400 text-xs flex items-center gap-1.5"
+            title="Executar esteira Subfinder -> dnsx -> httpx para descobrir todos os subdomínios"
+          >
+            {runningRecon ? <span class="animate-spin">⏳</span> : <span>🌐</span>}
+            <span>{runningRecon ? "Descobrindo Subdomínios..." : "Descobrir Subdomínios (Subfinder + dnsx + httpx)"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleRunBatchScan}
+            disabled={runningBatch || runningRecon || runningScan || assets.length === 0}
+            class="btn btn-sm btn-cyan text-xs flex items-center gap-1.5 font-semibold"
+            title="Escanear todos os subdomínios descobertos cirurgicamente por tecnologia com rate limit seguro"
+          >
+            {runningBatch ? <span class="animate-spin">⏳</span> : <span>⚡</span>}
+            <span>{runningBatch ? "Escaneando em Lote..." : `Escanear Todos em Lote (${assets.length} alvos)`}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Two-Stage Main Grid */}
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">

@@ -23,6 +23,7 @@ from pentefino_api.routers import (
     findings,
     intel,
     programs,
+    recon,
     scans,
     scope,
     templates,
@@ -292,6 +293,7 @@ def create_app() -> FastAPI:
     app.include_router(programs.router)
     app.include_router(scope.router)
     app.include_router(assets.router)
+    app.include_router(recon.router)
     app.include_router(templates.router)
     app.include_router(scans.router)
     app.include_router(findings.router)

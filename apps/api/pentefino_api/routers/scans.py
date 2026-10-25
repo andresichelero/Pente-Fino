@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import (
+    BatchScanAssetSummary,
+    BatchScanRequest,
+    BatchScanResponse,
     ScanHistoryItem,
     ScanPlanRequest,
     ScanPlanResponse,
@@ -321,6 +324,160 @@ async def run_scan(
         total_templates=plan.total_templates,
         findings_count=len(persisted_findings_data),
         findings=persisted_findings_data,
+        message=msg,
+    )
+
+
+@router.post("/batch-run", response_model=BatchScanResponse)
+async def run_batch_scans(
+    payload: BatchScanRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> BatchScanResponse:
+    """Executes surgical technology-matched Nuclei scans across all in-scope assets discovered in a program."""
+    prog = await get_program_or_404(session, payload.program_slug)
+
+    # 1. Fetch all in-scope assets for program
+    stmt = (
+        select(Asset)
+        .where(
+            Asset.program_id == prog.id,
+            Asset.scope_state.in_(["in_scope_explicit", "in_scope_derived"]),
+        )
+        .limit(payload.max_assets)
+    )
+    in_scope_assets = (await session.execute(stmt)).scalars().all()
+
+    if not in_scope_assets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No authorized in-scope assets found for program '{payload.program_slug}'. Run reconnaissance first.",
+        )
+
+    batch_run_id = f"batch-{uuid.uuid4().hex[:8]}"
+    planner = DetectionPlanner(db_session=session)
+    runner = EphemeralRunner()
+    nuclei_runner = HardenedNucleiRunner(runner=runner, rate_limit=payload.rate_limit)
+    normalizer = FindingNormalizer(db_session=session)
+
+    asset_summaries: list[BatchScanAssetSummary] = []
+    total_templates_executed = 0
+    total_findings_discovered = 0
+
+    await scan_hub.broadcast(
+        batch_run_id,
+        {
+            "event": "batch_scan_started",
+            "message": f"Iniciando varredura cirúrgica em lote para {len(in_scope_assets)} ativos em escopo (rate_limit: {payload.rate_limit} req/s)...",
+            "total_assets": len(in_scope_assets),
+            "progress": 5,
+        },
+    )
+
+    for idx, asset in enumerate(in_scope_assets):
+        target_asset, raw_techs, pruned_tags = await _resolve_asset_and_techs(
+            session, prog.id, asset.canonical_key
+        )
+        plan = await planner.create_plan(
+            asset=target_asset,
+            detected_technologies=raw_techs,
+            severity_filter=payload.severity,
+            tag_filter=payload.tags,
+            max_impact_class=ImpactClass.SAFE_READ_ONLY,
+        )
+
+        progress_pct = int(5 + ((idx + 1) / len(in_scope_assets)) * 90)
+
+        # Surgical skip if no matching templates for this endpoint
+        if plan.total_templates == 0:
+            asset_summaries.append(
+                BatchScanAssetSummary(
+                    asset_key=asset.canonical_key,
+                    matched_technologies=[],
+                    total_templates=0,
+                    findings_count=0,
+                    status="skipped_no_matching_tech",
+                )
+            )
+            continue
+
+        total_templates_executed += plan.total_templates
+        findings_count = 0
+        status_val = "completed"
+
+        if payload.mode == "auto":
+            try:
+                raw_findings = await nuclei_runner.execute_scan(
+                    plan=plan, rate_limit=payload.rate_limit
+                )
+                if raw_findings:
+                    persisted = await normalizer.normalize_and_persist(
+                        raw_nuclei_results=raw_findings,
+                        program_id=prog.id,
+                        asset_id=target_asset.id,
+                        run_id=plan.plan_id,
+                    )
+                    findings_count = len(persisted)
+                    total_findings_discovered += findings_count
+            except Exception:
+                status_val = "dry_run_fallback"
+
+        asset_summaries.append(
+            BatchScanAssetSummary(
+                asset_key=asset.canonical_key,
+                matched_technologies=plan.matched_technologies,
+                total_templates=plan.total_templates,
+                findings_count=findings_count,
+                status=status_val,
+            )
+        )
+
+        await scan_hub.broadcast(
+            batch_run_id,
+            {
+                "event": "batch_asset_scanned",
+                "asset_key": asset.canonical_key,
+                "matched_technologies": plan.matched_technologies,
+                "templates_count": plan.total_templates,
+                "findings_count": findings_count,
+                "progress": progress_pct,
+            },
+        )
+
+    await record_api_audit(
+        session=session,
+        event_type="api.scan.batch_run",
+        object_type="batch_scan",
+        object_id=batch_run_id,
+        payload={
+            "program_slug": prog.slug,
+            "assets_count": len(in_scope_assets),
+            "templates_executed": total_templates_executed,
+            "findings_discovered": total_findings_discovered,
+            "rate_limit": payload.rate_limit,
+        },
+    )
+
+    msg = (
+        f"Varredura cirúrgica concluída para {len(in_scope_assets)} ativos em escopo: "
+        f"{total_templates_executed} templates executadas, {total_findings_discovered} falha(s) identificada(s)."
+    )
+
+    await scan_hub.broadcast(
+        batch_run_id,
+        {
+            "event": "batch_scan_completed",
+            "message": msg,
+            "progress": 100,
+        },
+    )
+
+    return BatchScanResponse(
+        program_slug=prog.slug,
+        total_assets_scanned=len(in_scope_assets),
+        total_templates_executed=total_templates_executed,
+        total_findings_discovered=total_findings_discovered,
+        rate_limit_enforced=f"{payload.rate_limit} req/s",
+        assets=asset_summaries,
         message=msg,
     )
 
