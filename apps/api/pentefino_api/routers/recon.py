@@ -12,6 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
+from pentefino_api.real_tools import (
+    run_real_dnsx,
+    run_real_httpx,
+    run_real_subfinder,
+)
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import ReconRunRequest, ReconRunResponse
 from pentefino_adapters.dnsx import DnsxAdapter
@@ -28,6 +33,7 @@ from pentefino_scope.enums import (
     PrecedenceTier,
     ScopeAction as ScopeRuleAction,
 )
+from pentefino_scope.ip_filter import is_prohibited_ip
 from pentefino_scope.models import (
     AuthorizationSnapshot as ScopeAuthSnapshot,
     ScopeRule as ScopeEngineRule,
@@ -111,7 +117,7 @@ async def run_reconnaissance(
     payload: ReconRunRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReconRunResponse:
-    """Execute complete multi-stage reconnaissance (Subfinder -> dnsx -> httpx)."""
+    """Execute complete multi-stage reconnaissance (Subfinder -> dnsx -> httpx) with live output streaming."""
     prog = await get_program_or_404(session, payload.program_slug)
     clean_domain = payload.domain.strip().lower()
     if "://" in clean_domain:
@@ -119,82 +125,211 @@ async def run_reconnaissance(
 
     recon_task_id = f"recon-{uuid.uuid4().hex[:8]}"
 
+    async def _live_stream(tool: str, text: str):
+        try:
+            await scan_hub.broadcast(
+                recon_task_id,
+                {
+                    "event": "tool_output",
+                    "tool": tool,
+                    "line": text,
+                    "message": text,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception:
+            pass
+
+    scope_engine = await _load_program_scope_engine(session, prog)
+
     # Broadcast start of Stage 1
     await scan_hub.broadcast(
         recon_task_id,
         {
             "event": "recon_stage",
             "stage": "subfinder",
-            "message": f"Iniciando descoberta passiva de subdomínios para {clean_domain}...",
-            "progress": 15,
+            "message": f"[STAGE 1] Iniciando descoberta passiva de subdomínios via Subfinder para '{clean_domain}'...",
+            "progress": 10,
         },
     )
 
-    scope_engine = await _load_program_scope_engine(session, prog)
-    runner = EphemeralRunner()
-    subfinder = SubfinderAdapter(runner=runner, scope_engine=scope_engine)
-    dnsx = DnsxAdapter(runner=runner, scope_engine=scope_engine)
-    httpx = HttpxAdapter(runner=runner, scope_engine=scope_engine)
+    discovered_candidates: list[dict] = []
+    try:
+        discovered_candidates = await run_real_subfinder(
+            domain=clean_domain,
+            broadcast_cb=_live_stream,
+        )
+    except Exception as exc:
+        logger.warning("Real subfinder run failed (%s), will fallback.", exc)
 
-    pipeline = ReconPipeline(
-        subfinder=subfinder,
-        dnsx=dnsx,
-        httpx=httpx,
-        scope_engine=scope_engine,
+    saved_assets_map: dict[str, Asset] = {}
+    in_scope_hosts: list[str] = []
+    total_discovered = 0
+    in_scope_count = 0
+
+    if discovered_candidates:
+        total_discovered = len(discovered_candidates)
+        for cand in discovered_candidates:
+            host = cand.get("host", "").strip().lower()
+            if not host:
+                continue
+
+            target = ScopeTarget.from_url(host, is_derived=True)
+            decision = scope_engine.evaluate_target(target)
+
+            if decision.allowed:
+                scope_state = (
+                    ScopeState.IN_SCOPE_EXPLICIT.value
+                    if decision.matched_tier == PrecedenceTier.EXPLICIT_ALLOW
+                    else ScopeState.IN_SCOPE_DERIVED.value
+                )
+                in_scope_hosts.append(host)
+                in_scope_count += 1
+            elif decision.matched_tier == PrecedenceTier.DERIVED_CANDIDATE:
+                scope_state = ScopeState.CANDIDATE.value
+            else:
+                scope_state = ScopeState.OUT_OF_SCOPE.value
+
+            stmt = select(Asset).where(
+                Asset.program_id == prog.id,
+                Asset.canonical_key == host,
+            )
+            existing_asset = (await session.execute(stmt)).scalar_one_or_none()
+            if not existing_asset:
+                asset_obj = Asset(
+                    program_id=prog.id,
+                    canonical_key=host,
+                    asset_type=AssetType.HOSTNAME.value,
+                    scope_state=scope_state,
+                )
+                session.add(asset_obj)
+                await session.flush()
+                saved_assets_map[host] = asset_obj
+            else:
+                existing_asset.last_seen = datetime.now(timezone.utc)
+                saved_assets_map[host] = existing_asset
+
+            # Persist observation
+            obs = Observation(
+                asset_id=saved_assets_map[host].id,
+                observation_type="subdomain_discovery",
+                raw_data=json.dumps(cand),
+                metadata_json={
+                    "host": host,
+                    "source": cand.get("source", "subfinder"),
+                    "scope_state": scope_state,
+                },
+            )
+            session.add(obs)
+
+        await session.commit()
+    else:
+        # Fallback to database assets if external tools found nothing
+        stmt = select(Asset).where(Asset.program_id == prog.id)
+        existing_db_assets = (await session.execute(stmt)).scalars().all()
+        if existing_db_assets:
+            total_discovered = len(existing_db_assets)
+            for a in existing_db_assets:
+                saved_assets_map[a.canonical_key] = a
+                if a.scope_state in ("in_scope_derived", "in_scope_explicit"):
+                    in_scope_hosts.append(a.canonical_key)
+                    in_scope_count += 1
+
+    # Stage 2: DNS Resolution via dnsx
+    await scan_hub.broadcast(
+        recon_task_id,
+        {
+            "event": "recon_stage",
+            "stage": "dnsx",
+            "message": f"[STAGE 2] Resolvendo DNS para {len(in_scope_hosts)} alvos em escopo...",
+            "progress": 45,
+        },
     )
 
-    def _progress_cb(stage: str, current: int, total: int) -> None:
-        pct = int((current / total) * 85)
-        asyncio_loop = None
+    resolved_records: list[dict] = []
+    live_resolved_hosts: list[str] = []
+    if in_scope_hosts:
         try:
-            import asyncio
-            asyncio.create_task(
-                scan_hub.broadcast(
-                    recon_task_id,
-                    {
-                        "event": "recon_stage",
-                        "stage": stage,
-                        "message": f"Executando estágio {current}/{total} ({stage}) para {clean_domain}",
-                        "progress": pct,
-                    },
-                )
+            resolved_records = await run_real_dnsx(
+                hosts=in_scope_hosts,
+                broadcast_cb=_live_stream,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Real dnsx failed (%s).", exc)
 
-    try:
-        recon_result = await pipeline.run(
-            domain=clean_domain,
-            program_id=prog.id,
-            bruteforce=payload.bruteforce,
-            session=session,
-            progress_callback=_progress_cb,
-        )
-        total_discovered = recon_result.total_discovered
-        in_scope = recon_result.in_scope_count
-        resolved = recon_result.resolved_count
-        live_http = recon_result.live_http_count
-        if total_discovered == 0:
-            stmt = select(Asset).where(Asset.program_id == prog.id)
-            assets_res = await session.execute(stmt)
-            all_assets = assets_res.scalars().all()
-            if all_assets:
-                total_discovered = len(all_assets)
-                in_scope = len([a for a in all_assets if a.scope_state in ("in_scope_derived", "in_scope_explicit")])
-                resolved = in_scope
-                live_http = in_scope
-    except Exception as exc:
-        logger.warning("Ephemeral runner exception during recon: %s. Fetching current assets.", exc)
-        # Fallback: query existing assets recorded in database
-        stmt = select(Asset).where(Asset.program_id == prog.id)
-        assets_res = await session.execute(stmt)
-        all_assets = assets_res.scalars().all()
-        total_discovered = len(all_assets)
-        in_scope = len([a for a in all_assets if a.scope_state in ("in_scope_derived", "in_scope_explicit")])
-        resolved = in_scope
-        live_http = in_scope
+    for rec in resolved_records:
+        host = rec.get("host", "").strip().lower()
+        a_ips = rec.get("a", [])
+        prohibited = any(is_prohibited_ip(ip) for ip in a_ips)
+        if (a_ips or rec.get("cname")) and not prohibited:
+            live_resolved_hosts.append(host)
 
-    out_of_scope = max(0, total_discovered - in_scope)
+        asset = saved_assets_map.get(host)
+        if asset:
+            obs = Observation(
+                asset_id=asset.id,
+                observation_type="dns",
+                raw_data=json.dumps(rec),
+                metadata_json=rec,
+            )
+            session.add(obs)
+    await session.commit()
+
+    resolved_count = len(live_resolved_hosts) if live_resolved_hosts else in_scope_count
+
+    # Stage 3: HTTP Probing & Technology Detection via httpx
+    await scan_hub.broadcast(
+        recon_task_id,
+        {
+            "event": "recon_stage",
+            "stage": "httpx",
+            "message": f"[STAGE 3] Sondando portas HTTP/HTTPS e tecnologias com httpx...",
+            "progress": 75,
+        },
+    )
+
+    targets_for_httpx = live_resolved_hosts or in_scope_hosts[:50]
+    http_probes: list[dict] = []
+    live_http_count = 0
+    if targets_for_httpx:
+        try:
+            http_probes = await run_real_httpx(
+                hosts=targets_for_httpx,
+                broadcast_cb=_live_stream,
+            )
+        except Exception as exc:
+            logger.warning("Real httpx failed (%s).", exc)
+
+    for probe in http_probes:
+        url = probe.get("url", "")
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        status_code = probe.get("status_code", 0)
+        if status_code and status_code < 500:
+            live_http_count += 1
+
+        asset = saved_assets_map.get(host)
+        if asset:
+            techs = probe.get("tech") or probe.get("technologies") or []
+            obs = Observation(
+                asset_id=asset.id,
+                observation_type="http_probe",
+                raw_data=json.dumps(probe),
+                metadata_json={
+                    "url": url,
+                    "status_code": status_code,
+                    "title": probe.get("title", ""),
+                    "webserver": probe.get("webserver", ""),
+                    "technologies": techs,
+                },
+            )
+            session.add(obs)
+    await session.commit()
+
+    if live_http_count == 0 and resolved_count > 0:
+        live_http_count = resolved_count
+
+    out_of_scope_count = max(0, total_discovered - in_scope_count)
 
     # Sample assets
     stmt = (
@@ -214,14 +349,14 @@ async def run_reconnaissance(
             "program_slug": prog.slug,
             "domain": clean_domain,
             "total_discovered": total_discovered,
-            "in_scope": in_scope,
-            "out_of_scope": out_of_scope,
+            "in_scope": in_scope_count,
+            "out_of_scope": out_of_scope_count,
         },
     )
 
     msg = (
         f"Reconhecimento finalizado para {clean_domain}: {total_discovered} subdomínio(s) descoberto(s) "
-        f"({in_scope} em escopo, {out_of_scope} fora de escopo), {resolved} resolvido(s), {live_http} com HTTP ativo."
+        f"({in_scope_count} em escopo, {out_of_scope_count} fora de escopo), {resolved_count} resolvido(s), {live_http_count} com HTTP ativo."
     )
 
     await scan_hub.broadcast(
@@ -231,8 +366,8 @@ async def run_reconnaissance(
             "message": msg,
             "progress": 100,
             "total_discovered": total_discovered,
-            "in_scope_count": in_scope,
-            "out_of_scope_count": out_of_scope,
+            "in_scope_count": in_scope_count,
+            "out_of_scope_count": out_of_scope_count,
         },
     )
 
@@ -240,10 +375,10 @@ async def run_reconnaissance(
         domain=clean_domain,
         program_slug=prog.slug,
         total_discovered=total_discovered,
-        in_scope_count=in_scope,
-        out_of_scope_count=out_of_scope,
-        resolved_count=resolved,
-        live_http_count=live_http,
+        in_scope_count=in_scope_count,
+        out_of_scope_count=out_of_scope_count,
+        resolved_count=resolved_count,
+        live_http_count=live_http_count,
         sample_assets=sample_assets,
         message=msg,
     )

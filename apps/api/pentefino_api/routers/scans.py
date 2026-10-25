@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
+from pentefino_api.real_tools import run_real_nuclei
 from pentefino_api.routers.ws import scan_hub
 from pentefino_api.schemas import (
     BatchScanAssetSummary,
@@ -213,10 +214,41 @@ async def run_scan(
                 "progress": 50,
             },
         )
+        async def _live_nuclei_cb(tool: str, line: str):
+            try:
+                await scan_hub.broadcast(
+                    plan_id_str,
+                    {
+                        "event": "tool_output",
+                        "tool": "NUCLEI",
+                        "line": line,
+                        "message": line,
+                    },
+                )
+            except Exception:
+                pass
+
         try:
-            runner = EphemeralRunner()
-            nuclei_runner = HardenedNucleiRunner(runner=runner)
-            raw_findings = await nuclei_runner.execute_scan(plan=plan)
+            target_url = (
+                target_asset.canonical_key
+                if "://" in target_asset.canonical_key
+                else f"https://{target_asset.canonical_key}"
+            )
+            raw_findings = await run_real_nuclei(
+                target_url=target_url,
+                template_ids=plan.selected_template_ids,
+                rate_limit=10,
+                broadcast_cb=_live_nuclei_cb,
+            )
+
+            if not raw_findings:
+                # Fallback to ephemeral runner if real nuclei found nothing
+                try:
+                    runner = EphemeralRunner()
+                    nuclei_runner = HardenedNucleiRunner(runner=runner, rate_limit=10)
+                    raw_findings = await nuclei_runner.execute_scan(plan=plan)
+                except Exception:
+                    pass
 
             normalizer = FindingNormalizer(db_session=session)
             persisted = await normalizer.normalize_and_persist(
@@ -238,17 +270,17 @@ async def run_scan(
                 for f in persisted
             ]
             status_str = "completed"
-            mode_executed = "container"
+            mode_executed = "real_cli"
             msg = (
-                f"Executed {plan.total_templates} templates in isolated container; "
-                f"{len(persisted_findings_data)} finding(s) persisted."
+                f"Executados {plan.total_templates} templates de detecção cirúrgica; "
+                f"{len(persisted_findings_data)} falha(s) identificada(s)."
             )
         except Exception as exc:
             status_str = "dry_run_completed"
             mode_executed = "dry_run_fallback"
             msg = (
-                f"Docker runtime unavailable or restricted ({type(exc).__name__}); "
-                f"gracefully completed in dry-run mode with {plan.total_templates} planned templates."
+                f"Runtime de varredura indisponível ({type(exc).__name__}); "
+                f"concluído em modo de simulação com {plan.total_templates} templates."
             )
     elif requested_mode in ("async", "queue", "queued"):
         from pentefino_worker.publisher import default_publisher
@@ -405,10 +437,40 @@ async def run_batch_scans(
         status_val = "completed"
 
         if payload.mode == "auto":
+            async def _live_batch_nuclei_cb(tool: str, line: str):
+                try:
+                    await scan_hub.broadcast(
+                        batch_run_id,
+                        {
+                            "event": "tool_output",
+                            "tool": "NUCLEI",
+                            "line": line,
+                            "message": line,
+                        },
+                    )
+                except Exception:
+                    pass
+
             try:
-                raw_findings = await nuclei_runner.execute_scan(
-                    plan=plan, rate_limit=payload.rate_limit
+                target_url = (
+                    asset.canonical_key
+                    if "://" in asset.canonical_key
+                    else f"https://{asset.canonical_key}"
                 )
+                raw_findings = await run_real_nuclei(
+                    target_url=target_url,
+                    template_ids=plan.selected_template_ids,
+                    rate_limit=payload.rate_limit,
+                    broadcast_cb=_live_batch_nuclei_cb,
+                )
+                if not raw_findings:
+                    try:
+                        raw_findings = await nuclei_runner.execute_scan(
+                            plan=plan, rate_limit=payload.rate_limit
+                        )
+                    except Exception:
+                        pass
+
                 if raw_findings:
                     persisted = await normalizer.normalize_and_persist(
                         raw_nuclei_results=raw_findings,

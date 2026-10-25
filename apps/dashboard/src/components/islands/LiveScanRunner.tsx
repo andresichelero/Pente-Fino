@@ -46,6 +46,47 @@ export default function LiveScanRunner({
   const [runningBatch, setRunningBatch] = useState<boolean>(false);
   const [scanProgress, setScanProgress] = useState<number>(0);
   const [scanResult, setScanResult] = useState<any | null>(null);
+  const [lastLiveLines, setLastLiveLines] = useState<
+    { id: string; tool: string; text: string; time: string }[]
+  >([
+    {
+      id: "init-1",
+      tool: "SYSTEM",
+      text: "Console efêmero pronto. Hard-gate: SAFE_READ_ONLY.",
+      time: "00:00:00",
+    },
+    {
+      id: "init-2",
+      tool: "RATE-LIMIT",
+      text: "Limitador de taxa ativo configurado para 10 req/s.",
+      time: "00:00:00",
+    },
+    {
+      id: "init-3",
+      tool: "PROXY",
+      text: "Egress Proxy Guard 127.0.0.1:8080 online com fail-closed.",
+      time: "00:00:00",
+    },
+    {
+      id: "init-4",
+      tool: "RECON",
+      text: "Subfinder + dnsx + httpx prontos para execução em lote.",
+      time: "00:00:00",
+    },
+    {
+      id: "init-5",
+      tool: "NUCLEI",
+      text: "HardenedNucleiRunner preparado com rate-limit: 10 req/s.",
+      time: "00:00:00",
+    },
+  ]);
+  const [netHealth, setNetHealth] = useState<any>({
+    overall_latency_ms: 125.0,
+    overall_jitter_ms: 1.2,
+    packet_loss_pct: 0.0,
+    download_kbps: 0.0,
+    upload_kbps: 0.0,
+  });
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
     "[SYSTEM] Console de Execução Efêmera PenteFino pronto.",
     "[SYSTEM] Hard-gate: Somente templates SAFE_READ_ONLY + Egress Proxy (127.0.0.1:8080).",
@@ -64,7 +105,12 @@ export default function LiveScanRunner({
       if (qProg) setProgramSlug(qProg);
       if (qAsset) setAssetKey(qAsset);
     }
-  }, []);
+    // Fetch network health stats
+    fetch(`${apiBaseUrl}/api/v1/telemetry/network-health`)
+      .then((r) => r.json())
+      .then((d) => setNetHealth(d))
+      .catch(() => {});
+  }, [apiBaseUrl]);
 
   useEffect(() => {
     if (programSlug) {
@@ -87,16 +133,82 @@ export default function LiveScanRunner({
   }, [terminalLogs]);
 
   useEffect(() => {
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
+
+    function connectWs() {
+      try {
+        const wsUrl = `${wsBaseUrl}/ws/scans/live`;
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          appendLog("[WS] Conectado ao stream ao vivo (/ws/scans/live).");
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (typeof msg.progress === "number") {
+              setScanProgress(Math.max(10, Math.min(100, msg.progress)));
+            }
+            if (msg.event === "tool_output") {
+              const tool = msg.tool || "CLI";
+              const line = msg.line || msg.message || "";
+              if (line) {
+                appendLog(`[${tool}] ${line}`);
+              }
+            } else if (msg.event === "recon_stage") {
+              appendLog(`[RECON:${String(msg.stage).toUpperCase()}] ${msg.message}`);
+            } else if (msg.event === "recon_completed") {
+              appendLog(`[RECON:SUCCESS] ${msg.message}`);
+            } else if (msg.line || msg.message) {
+              appendLog(msg.line || msg.message);
+            }
+          } catch {
+            // Raw text fallback
+          }
+        };
+
+        ws.onclose = () => {
+          reconnectTimer = setTimeout(connectWs, 3000);
+        };
+      } catch {
+        reconnectTimer = setTimeout(connectWs, 5000);
       }
+    }
+
+    connectWs();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) ws.close();
     };
-  }, []);
+  }, [wsBaseUrl]);
 
   function appendLog(line: string) {
     const ts = new Date().toISOString().split("T")[1].slice(0, 8);
     setTerminalLogs((prev) => [...prev, `[${ts}] ${line}`]);
+
+    const lower = line.toLowerCase();
+    const tool = lower.includes("nuclei") || lower.includes("[runner]")
+      ? "NUCLEI"
+      : lower.includes("subfinder") || lower.includes("[recon")
+      ? "SUBFINDER"
+      : lower.includes("httpx")
+      ? "HTTPX"
+      : lower.includes("dnsx")
+      ? "DNSX"
+      : lower.includes("[batch")
+      ? "BATCH"
+      : lower.includes("[planner]")
+      ? "PLANNER"
+      : "SCANNER";
+
+    setLastLiveLines((prev) => [
+      ...prev.slice(Math.max(0, prev.length - 4)),
+      { id: `${Date.now()}-${Math.random()}`, tool, text: line, time: ts },
+    ]);
   }
 
   function toggleSeverity(sev: string) {
@@ -308,7 +420,7 @@ export default function LiveScanRunner({
     setRunningBatch(true);
     setScanProgress(10);
     const sevString = selectedSeverities.join(",");
-    appendLog(`[BATCH-RUN] Disparando varredura cirúrgica em lote para todos os ativos em escopo de '${programSlug}' (rate-limit: 50 req/s, WAF-pruning ativo)...`);
+    appendLog(`[BATCH-RUN] Disparando varredura cirúrgica em lote para todos os ativos em escopo de '${programSlug}' (rate-limit: 10 req/s, WAF-pruning ativo)...`);
 
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/scans/batch-run`, {
@@ -318,7 +430,7 @@ export default function LiveScanRunner({
           program_slug: programSlug,
           severity: sevString || null,
           tags: tagsFilter.trim() || null,
-          rate_limit: 50,
+          rate_limit: 10,
           mode: runMode,
           max_assets: 50,
         }),
@@ -525,12 +637,22 @@ export default function LiveScanRunner({
         </div>
       </form>
 
-      {/* Pipeline Automation Toolbar (Reconnaissance + Multi-Target Batch Scan) */}
+      {/* Pipeline Automation Toolbar (Reconnaissance + Multi-Target Batch Scan + Network Monitor) */}
       <div class="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-lg bg-[#0d1117] border border-[#1b2230]">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-white">Pipeline Automatizado:</span>
-          <span class="pill pill-cyan font-mono">{assets.length} ativos em escopo</span>
-          <span class="text-[11px] text-[#7d8590]">rate-limit: 50 req/s · WAF pruning ativo</span>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs font-semibold text-white">Pipeline:</span>
+          <span class="pill pill-cyan font-mono">{assets.length} ativos</span>
+          <span class="pill pill-amber font-mono">RL: 10 req/s</span>
+          {/* Live Network Health Badge */}
+          <div class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#070a0f] border border-[#1b2230] text-[11px] font-mono">
+            <span class="h-1.5 w-1.5 rounded-full bg-[#10b981] animate-pulse" />
+            <span class="text-[#7d8590]">Ping:</span>
+            <span class="text-[#06b6d4] font-bold">{netHealth?.overall_latency_ms ?? 125}ms</span>
+            <span class="text-[#7d8590]">Jitter:</span>
+            <span class="text-[#e6edf3] font-bold">{netHealth?.overall_jitter_ms ?? 1.2}ms</span>
+            <span class="text-[#7d8590]">Loss:</span>
+            <span class="text-[#10b981] font-bold">{netHealth?.packet_loss_pct ?? 0}%</span>
+          </div>
         </div>
         <div class="flex items-center gap-2">
           <button
@@ -549,7 +671,7 @@ export default function LiveScanRunner({
             onClick={handleRunBatchScan}
             disabled={runningBatch || runningRecon || runningScan || assets.length === 0}
             class="btn btn-sm btn-cyan text-xs flex items-center gap-1.5 font-semibold"
-            title="Escanear todos os subdomínios descobertos cirurgicamente por tecnologia com rate limit seguro"
+            title="Escanear todos os subdomínios descobertos cirurgicamente por tecnologia com rate limit seguro de 10 req/s"
           >
             {runningBatch ? <span class="animate-spin">⏳</span> : <span>⚡</span>}
             <span>{runningBatch ? "Escaneando em Lote..." : `Escanear Todos em Lote (${assets.length} alvos)`}</span>
@@ -709,6 +831,34 @@ export default function LiveScanRunner({
               >
                 Clear
               </button>
+            </div>
+
+            {/* HUD: Últimas 5 Linhas ao Vivo das Ferramentas */}
+            <div class="p-2.5 bg-[#090d15] border-b border-[#1b2230] space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-mono text-[#06b6d4] font-bold tracking-wider flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full bg-[#06b6d4] animate-ping" />
+                  ÚLTIMAS 5 LINHAS AO VIVO DOS SCANNERS (CLI OUTPUT)
+                </span>
+                <span class="text-[10px] font-mono text-[#7d8590]">stream ativo</span>
+              </div>
+              <div class="space-y-1 font-mono text-[11px]">
+                {lastLiveLines.map((item) => (
+                  <div key={item.id} class="flex items-start gap-2 bg-[#05070b]/60 px-2 py-1 rounded border border-[#1b2230]/40">
+                    <span class={`pill text-[9px] px-1.5 py-0 font-bold shrink-0 ${
+                      item.tool === "NUCLEI" ? "pill-cyan" :
+                      item.tool === "SUBFINDER" ? "pill-emerald" :
+                      item.tool === "HTTPX" ? "pill-purple" :
+                      item.tool === "BATCH" ? "pill-amber" :
+                      "pill-neutral"
+                    }`}>
+                      {item.tool}
+                    </span>
+                    <span class="text-[#7d8590] text-[10px] shrink-0">{item.time}</span>
+                    <span class="text-[#e6edf3] truncate" title={item.text}>{item.text}</span>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div

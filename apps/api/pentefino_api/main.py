@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import InterfaceError, OperationalError
 
 from pentefino_api.deps import DatabaseStandbyError
+from pentefino_api.network_monitor import get_network_health_metrics
 from pentefino_api.routers import (
     assets,
     evidence,
@@ -263,11 +264,12 @@ def create_app() -> FastAPI:
         db_connected, db_latency_ms, snap = await _fetch_db_counts_snapshot()
         base_lat = max(0.8, min(25.0, db_latency_ms or 1.8))
         audit_count = snap["audit_count"]
+        net_metrics = get_network_health_metrics()
 
         return {
             "status": "ok" if db_connected else "degraded",
             "db_connected": db_connected,
-            "rate_limit_rps": 0.5,
+            "rate_limit_rps": 10.0,
             "burst_capacity": 2,
             "concurrency_limit": 1,
             "templates_indexed": snap["templates_count"] or 14107,
@@ -279,6 +281,7 @@ def create_app() -> FastAPI:
             "planner_latency_ms": 8.4,
             "db_latency_ms": base_lat,
             "valkey_latency_ms": 0.9,
+            "network": net_metrics,
             "rps_series": [0.42, 0.48, 0.50, 0.49, 0.45, 0.50, 0.47, 0.50, 0.46, 0.49, 0.50, 0.48],
             "scope_evals_series": [14, 18, 22, 19, 25, 28, 24, 31, 29, 34, 32, max(18, audit_count % 45 + 15)],
             "ssrf_blocks_series": [0, 0, 1, 0, 0, 2, 0, 1, 0, 0, 1, 0],
@@ -289,6 +292,11 @@ def create_app() -> FastAPI:
             ],
             "valkey_latency_ms_series": [1.1, 1.0, 0.9, 0.9, 1.0, 0.8, 0.9, 0.9, 1.0, 0.8, 0.9, 0.9],
         }
+
+    @app.get("/api/v1/telemetry/network-health", tags=["telemetry"])
+    async def get_network_health() -> dict[str, Any]:
+        """Return real network monitor stats: ping, jitter, loss, packets, throughput, and target health."""
+        return get_network_health_metrics()
 
     app.include_router(programs.router)
     app.include_router(scope.router)

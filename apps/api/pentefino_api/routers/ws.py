@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, select
 
+from pentefino_api.network_monitor import get_network_health_metrics
 from pentefino_domain.models.audit import AuditEvent
 from pentefino_domain.session import check_db_available, get_async_session
 
@@ -38,7 +39,10 @@ class ScanTelemetryHub:
         return list(self._subscribers.get(plan_id, set()))
 
     async def broadcast(self, plan_id: str, event: dict[str, Any]) -> None:
-        subscribers = self.record_and_get_subscribers(plan_id, event)
+        subscribers = set(self.record_and_get_subscribers(plan_id, event))
+        if plan_id != "live":
+            subscribers.update(self.record_and_get_subscribers("live", event))
+
         latest = self._history[plan_id][-1]
         dead: list[WebSocket] = []
         for ws in subscribers:
@@ -48,6 +52,8 @@ class ScanTelemetryHub:
                 dead.append(ws)
         for ws in dead:
             self._subscribers[plan_id].discard(ws)
+            if "live" in self._subscribers:
+                self._subscribers["live"].discard(ws)
 
     def subscribe(self, plan_id: str, ws: WebSocket) -> list[dict[str, Any]]:
         self._subscribers[plan_id].add(ws)
@@ -216,13 +222,14 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
         await websocket.send_json(
             {
                 "event": "telemetry_tick",
-                "rate_limit_rps": 0.5,
-                "burst_capacity": 2,
+                "rate_limit_rps": 10.0,
+                "burst_capacity": 5,
                 "mode": "fail-closed",
                 "cloaking": "desktop-ua-rotation",
                 "ssrf_guard": "active (RFC1918 + IMDSv2 169.254.169.254 blocked)",
                 "dns_rebinding_protection": "enforced",
                 "audit_events_logged": audit_count,
+                "network": get_network_health_metrics(),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -318,12 +325,13 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
                     await websocket.send_json(
                         {
                             "event": "telemetry_tick",
-                            "rate_limit_rps": 0.5,
-                            "burst_capacity": 2,
+                            "rate_limit_rps": 10.0,
+                            "burst_capacity": 5,
                             "mode": "fail-closed",
                             "cloaking": "desktop-ua-rotation",
                             "ssrf_guard": "active",
                             "audit_events_logged": audit_count,
+                            "network": get_network_health_metrics(),
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                     )
@@ -331,12 +339,13 @@ async def ws_proxy_telemetry(websocket: WebSocket) -> None:
                 await websocket.send_json(
                     {
                         "event": "telemetry_tick",
-                        "rate_limit_rps": 0.5,
-                        "burst_capacity": 2,
+                        "rate_limit_rps": 10.0,
+                        "burst_capacity": 5,
                         "mode": "fail-closed",
                         "cloaking": "desktop-ua-rotation",
                         "ssrf_guard": "active",
                         "audit_events_logged": audit_count,
+                        "network": get_network_health_metrics(),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                 )

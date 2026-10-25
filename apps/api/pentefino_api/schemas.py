@@ -269,7 +269,7 @@ class BatchScanRequest(BaseModel):
     program_slug: str
     severity: str | None = None
     tags: str | None = None
-    rate_limit: int = 50
+    rate_limit: int = 10
     mode: str = "auto"
     max_assets: int = 50
 

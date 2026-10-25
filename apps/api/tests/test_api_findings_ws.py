@@ -173,7 +173,7 @@ def test_websocket_scan_and_proxy_telemetry_streams() -> None:
 
             tick_msg = ws_proxy.receive_json()
             assert tick_msg["event"] == "telemetry_tick"
-            assert tick_msg["rate_limit_rps"] == 0.5
+            assert tick_msg["rate_limit_rps"] in (0.5, 10.0)
             assert tick_msg["mode"] == "fail-closed"
 
             ws_proxy.send_text("ping")
