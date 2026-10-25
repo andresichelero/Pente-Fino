@@ -264,14 +264,14 @@ export default function LiveScanRunner({
   }
 
   const stageLabel = runningScan
-    ? "STAGE 2: EXECUTING EPHEMERAL CONTAINER"
+    ? "Executando varredura no site..."
     : scanResult
-    ? "COMPLETED · E2 DEDUP SYNCED"
+    ? "Varredura concluída · Resultados prontos"
     : planning
-    ? "STAGE 1: COMPUTING SURGICAL PLAN"
+    ? "Identificando tecnologias do site..."
     : planResult
-    ? "STAGE 1 READY · AWAITING EXECUTION"
-    : "IDLE · SELECT TARGET & SIMULATE PLAN";
+    ? "Tecnologias identificadas · Pronto para escanear"
+    : "Aguardando seleção do alvo";
 
   if (programs.length === 0) {
     return (
@@ -284,12 +284,12 @@ export default function LiveScanRunner({
         <div>
           <h3 class="text-sm font-semibold text-white">Nenhum programa cadastrado</h3>
           <p class="text-xs text-[#738196] mt-1 max-w-sm mx-auto">
-            Cadastre um programa de Bug Bounty para planejar e executar varreduras com segurança.
+            Cadastre um alvo para planejar e executar varreduras com segurança.
           </p>
         </div>
         <div>
           <a href="/programs" class="btn btn-primary">
-            + Cadastrar Programa
+            + Cadastrar Alvo
           </a>
         </div>
       </div>
@@ -328,7 +328,7 @@ export default function LiveScanRunner({
       <form onSubmit={handleSimulatePlan} class="card card-pad space-y-3">
         <div class="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
           <div class="md:col-span-3">
-            <label class="kpi-label block mb-1">Program</label>
+            <label class="kpi-label block mb-1">1. Escolha o Alvo</label>
             <select
               value={programSlug}
               onChange={(e) => setProgramSlug((e.target as HTMLSelectElement).value)}
@@ -347,7 +347,7 @@ export default function LiveScanRunner({
           </div>
 
           <div class="md:col-span-3">
-            <label class="kpi-label block mb-1">Target Canonical Key</label>
+            <label class="kpi-label block mb-1">2. Endereço / URL do Site</label>
             <input
               type="text"
               list="scoped-assets-datalist"
