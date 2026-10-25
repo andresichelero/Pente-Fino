@@ -2,13 +2,29 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from pentefino_runner.exceptions import InvalidImageDigestError
 
 DEFAULT_NETWORK: str = "pentefino_pentefino-net"
 FALLBACK_NETWORK: str = "pentefino-net"
 ENV_NETWORK_VAR: str = "PENTEFINO_DOCKER_NETWORK"
 DEFAULT_HTTP_PROXY: str = "http://pentefino_proxy:8080"
+IMAGE_DIGEST_PATTERN: re.Pattern[str] = re.compile(r"^.+@sha256:[a-fA-F0-9]{64}$")
+
+
+def validate_image_digest(image: str, raise_exc: bool = True) -> bool:
+    """Validate that image reference matches cryptographically pinned supply chain format '^.+@sha256:[a-fA-F0-9]{64}$'."""
+    if not image or not IMAGE_DIGEST_PATTERN.match(image):
+        if raise_exc:
+            raise InvalidImageDigestError(
+                f"Image '{image}' does not comply with container supply chain security policy. "
+                f"Image reference must match regex '^.+@sha256:[a-fA-F0-9]{{64}}$'."
+            )
+        return False
+    return True
 
 
 class VolumeMount(BaseModel):
@@ -27,8 +43,22 @@ class RunConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     image: str
+    strict_digest_validation: bool = Field(
+        default_factory=lambda: os.getenv("PENTEFINO_STRICT_DIGEST", "false").lower() in ("1", "true", "yes")
+    )
     command: List[str] = Field(default_factory=list)
     entrypoint: Optional[List[str]] = None
+
+    @model_validator(mode="after")
+    def _validate_image_digest(self) -> "RunConfig":
+        if self.strict_digest_validation:
+            validate_image_digest(self.image, raise_exc=True)
+        return self
+
+    @classmethod
+    def validate_digest(cls, image: str) -> bool:
+        """Classmethod validator to check image digest compliance."""
+        return validate_image_digest(image, raise_exc=True)
 
     # Isolation & Identity
     container_name: Optional[str] = None

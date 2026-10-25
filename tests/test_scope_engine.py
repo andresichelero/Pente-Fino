@@ -935,4 +935,46 @@ class TestAdvancedEdgeCases:
         assert proh is True
         assert "LOOPBACK" in reason
 
+    @pytest.mark.parametrize(
+        "bypass_url",
+        [
+            "https://app.example.com//admin",
+            "https://app.example.com///admin/users",
+            "https://app.example.com/Admin/settings",
+            "https://app.example.com/admin;jsessionid=1234/users",
+            "https://app.example.com/%5cadmin/panel",
+        ],
+    )
+    def test_denied_path_double_slash_matrix_case_backslash_bypasses_blocked(
+        self, base_program_id, active_snapshot, bypass_url
+    ):
+        rules = [
+            ScopeRule(
+                program_id=base_program_id,
+                asset_type=AssetType.HOSTNAME,
+                pattern="app.example.com",
+                action=ScopeAction.ALLOW,
+                denied_paths=["/admin"],
+            )
+        ]
+        engine = ScopeEngine(snapshot=active_snapshot, rules=rules)
+        decision = engine.evaluate_target(bypass_url)
+        assert decision.allowed is False
+        assert decision.matched_tier == PrecedenceTier.PATH_PORT_DENY
+
+    def test_url_asset_type_strict_authority_path_boundary(self, base_program_id, active_snapshot):
+        rules = [
+            ScopeRule(
+                program_id=base_program_id,
+                asset_type=AssetType.URL,
+                pattern="https://example.com/api",
+                action=ScopeAction.ALLOW,
+            )
+        ]
+        engine = ScopeEngine(snapshot=active_snapshot, rules=rules)
+        assert engine.evaluate_target("https://example.com/api/v1/users").allowed is True
+        assert engine.evaluate_target("https://example.com/api_internal").allowed is False
+        assert engine.evaluate_target("https://example.com.attacker.com/api").allowed is False
+
+
 

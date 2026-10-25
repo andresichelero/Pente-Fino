@@ -14,6 +14,12 @@ class ContainerEngineNotFoundError(RunnerError):
     pass
 
 
+class InvalidImageDigestError(RunnerError):
+    """Raised when container image is not cryptographically pinned with @sha256:<64-hex>."""
+
+    pass
+
+
 class ContainerExecutionError(RunnerError):
     """Raised when a container process exits with a non-zero exit code."""
 

@@ -1,0 +1,1 @@
+Local lab authorization — DVWA on 127.0.0.1:8088. Owner André. Only localhost. safe_read_only only.

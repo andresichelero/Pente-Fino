@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pentefino-worker"
+version = "0.5.0"
+description = "PenteFino Asynchronous Scan & Recon Task Worker"
+requires-python = ">=3.11"
+authors = [
+    { name = "PenteFino Core Team" }
+]
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.30",
+    "pydantic>=2.7.0",
+    "aio-pika>=10.0.0",
+    "redis>=5.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pentefino_worker"]

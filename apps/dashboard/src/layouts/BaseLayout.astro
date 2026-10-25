@@ -1,248 +1,82 @@
 ---
-import { fetchHealth } from "../lib/api";
+import "../styles/global.css";
 
 interface Props {
   title: string;
-  subtitle?: string;
-  activeNav?: string;
+  lead?: string;
+  active?: string;
 }
 
-const { title, subtitle, activeNav } = Astro.props;
-const currentPath = Astro.url.pathname;
-const health = await fetchHealth();
+const { title, lead, active } = Astro.props;
 
-const navItems = [
-  {
-    href: "/",
-    id: "overview",
-    label: "Visão Geral",
-    sub: "Executive Overview",
-    badge: "KPIs",
-  },
-  {
-    href: "/programs",
-    id: "programs",
-    label: "Programas & Escopo",
-    sub: "7-Tier Governance",
-    badge: "FAIL-CLOSED",
-  },
-  {
-    href: "/assets",
-    id: "assets",
-    label: "Ativos & Grafo Topológico",
-    sub: "Discovery & IP Invariant",
-    badge: "CYTOSCAPE",
-  },
-  {
-    href: "/templates",
-    id: "templates",
-    label: "Catálogo Nuclei",
-    sub: "14.107+ AST-Classified Templates",
-    badge: "14.1K",
-  },
-  {
-    href: "/scans",
-    id: "scans",
-    label: "Detection Planner & Scans",
-    sub: "CDN Pruning & Runner",
-    badge: "RUNNER",
-  },
-  {
-    href: "/findings",
-    id: "findings",
-    label: "Triagem & Forense E2",
-    sub: "Kanban & Bug Bounty Reports",
-    badge: "E0–E3",
-  },
-  {
-    href: "/telemetry",
-    id: "telemetry",
-    label: "Telemetria Egress Proxy",
-    sub: "Valkey Token-Bucket & SSRF Guard",
-    badge: "LIVE WS",
-  },
+const nav = [
+  { href: "/", id: "overview", label: "Visão geral" },
+  { href: "/programs", id: "programs", label: "Programas e escopo" },
+  { href: "/assets", id: "assets", label: "Ativos" },
+  { href: "/scans", id: "scans", label: "Scans e recon" },
+  { href: "/findings", id: "findings", label: "Achados" },
+  { href: "/templates", id: "templates", label: "Templates" },
+  { href: "/telemetry", id: "telemetry", label: "Rede" },
 ];
-
-function isActive(href: string, id: string): boolean {
-  if (activeNav) return activeNav === id;
-  if (href === "/") return currentPath === "/";
-  return currentPath.startsWith(href);
-}
-
-const templateCountFormatted = (health.template_count || 14107).toLocaleString("pt-BR");
 ---
 
 <!doctype html>
-<html lang="pt-BR" class="dark">
+<html lang="pt-BR">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{title} | PenteFino SecOps Console</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} · PenteFino</title>
+    <meta name="description" content="Plano de controle de governança e descoberta de vulnerabilidades PenteFino." />
+    <script is:inline>
+      // Respect a saved theme choice before paint to avoid a flash.
+      try {
+        const t = localStorage.getItem("pf-theme");
+        if (t) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
-  <body class="bg-bg-abyss text-slate-100 font-sans antialiased selection:bg-accent-emerald/30 selection:text-emerald-200 min-h-screen flex">
-    <!-- Fixed Left Sidebar -->
-    <aside class="w-72 bg-bg-panel border-r border-border-grid flex flex-col fixed inset-y-0 left-0 z-30 select-none">
-      <!-- Brand Header -->
-      <div class="p-5 border-b border-border-grid flex items-center justify-between">
-        <a href="/" class="flex items-center gap-3 group">
-          <div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-accent-emerald/40 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.2)] group-hover:border-accent-emerald transition">
-            <span class="font-mono font-bold text-accent-emerald text-lg tracking-tighter">PF</span>
-          </div>
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="font-mono font-bold text-white tracking-wider text-base">PENTEFINO</span>
-              <span class="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-accent-emerald/15 text-accent-emerald border border-accent-emerald/30">
-                v0.5
-              </span>
-            </div>
-            <p class="text-[11px] text-slate-400 font-mono">Bug Bounty & AppSec Ops</p>
-          </div>
-        </a>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">PenteFino</a>
+        <nav aria-label="Seções">
+          <ul class="nav">
+            {
+              nav.map((n) => (
+                <li>
+                  <a href={n.href} aria-current={active === n.id ? "page" : undefined}>
+                    {n.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+        <button id="theme-toggle" class="conn" type="button" aria-label="Alternar tema claro/escuro">
+          Tema
+        </button>
       </div>
+    </header>
 
-      <!-- Governance Invariant Banner -->
-      <div class="px-4 py-2.5 bg-slate-950/70 border-b border-border-grid flex items-center justify-between text-[11px] font-mono">
-        <span class="text-slate-400">ENGINE MODE</span>
-        <span class="text-accent-emerald font-semibold flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-accent-emerald animate-pulse"></span>
-          FAIL-CLOSED
-        </span>
+    <main>
+      <div class="page-head">
+        <h1>{title}</h1>
+        {lead && <p>{lead}</p>}
       </div>
+      <slot />
+    </main>
 
-      <!-- Primary Navigation -->
-      <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-1.5">
-        {
-          navItems.map((item) => {
-            const active = isActive(item.href, item.id);
-            return (
-              <a
-                href={item.href}
-                class:list={[
-                  "block px-3.5 py-2.5 rounded-lg border transition-all duration-150 group",
-                  active
-                    ? "bg-emerald-950/30 border-accent-emerald/50 text-white shadow-[inset_2px_0_0_0_#10b981]"
-                    : "border-transparent hover:bg-slate-800/50 hover:border-border-grid text-slate-300",
-                ]}
-              >
-                <div class="flex items-center justify-between">
-                  <span
-                    class:list={[
-                      "text-sm font-medium tracking-tight",
-                      active ? "text-accent-emerald font-semibold" : "group-hover:text-white",
-                    ]}
-                  >
-                    {item.label}
-                  </span>
-                  <span
-                    class:list={[
-                      "text-[10px] font-mono px-1.5 py-0.5 rounded border",
-                      active
-                        ? "bg-accent-emerald/20 text-accent-emerald border-accent-emerald/40"
-                        : "bg-slate-900 text-slate-400 border-slate-800",
-                    ]}
-                  >
-                    {item.badge}
-                  </span>
-                </div>
-                <div class="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
-                  {item.sub}
-                </div>
-              </a>
-            );
-          })
-        }
-      </nav>
-
-      <!-- Sidebar Footer: Security Posture -->
-      <div class="p-4 border-t border-border-grid bg-slate-950/50 space-y-2 text-xs font-mono">
-        <div class="flex items-center justify-between text-slate-400">
-          <span>EGRESS PROXY</span>
-          <span class="text-accent-cyan">0.5 req/s</span>
-        </div>
-        <div class="flex items-center justify-between text-slate-400">
-          <span>REDACTION</span>
-          <span class="text-accent-emerald">bounty-safe-v1</span>
-        </div>
-        <div class="flex items-center justify-between text-slate-400">
-          <span>BINDING</span>
-          <span class="text-slate-300">127.0.0.1 ONLY</span>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Main Content Area -->
-    <div class="flex-1 pl-72 flex flex-col min-h-screen">
-      <!-- Top Status Header -->
-      <header class="sticky top-0 z-20 bg-bg-abyss/90 backdrop-blur-md border-b border-border-grid px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2.5">
-            <span>{title}</span>
-          </h1>
-          {subtitle && <p class="text-xs text-slate-400 font-mono mt-0.5">{subtitle}</p>}
-        </div>
-
-        <!-- Live Health Badges -->
-        <div class="flex items-center gap-3 flex-wrap text-xs font-mono">
-          <!-- PostgreSQL 16 Status Badge -->
-          <div
-            class:list={[
-              "px-3 py-1.5 rounded-md border flex items-center gap-2",
-              health.db_connected
-                ? "bg-emerald-950/30 border-accent-emerald/40 text-emerald-300"
-                : "bg-amber-950/30 border-accent-amber/40 text-amber-300",
-            ]}
-          >
-            <span
-              class:list={[
-                "w-2 h-2 rounded-full",
-                health.db_connected ? "bg-accent-emerald" : "bg-accent-amber animate-ping",
-              ]}
-            ></span>
-            <span>PG16: {health.db_connected ? "ONLINE" : "STANDBY"}</span>
-          </div>
-
-          <!-- Template Catalog Count Badge -->
-          <a
-            href="/templates"
-            class="px-3 py-1.5 rounded-md border border-cyan-500/30 bg-cyan-950/20 text-cyan-300 hover:border-accent-cyan transition flex items-center gap-2"
-          >
-            <span class="text-slate-400">TEMPLATES:</span>
-            <span class="font-bold text-accent-cyan">{templateCountFormatted}</span>
-          </a>
-
-          <!-- Egress Proxy Badge -->
-          <a
-            href="/telemetry"
-            class="px-3 py-1.5 rounded-md border border-emerald-500/40 bg-emerald-950/30 text-accent-emerald font-semibold flex items-center gap-2 shadow-[0_0_12px_rgba(16,185,129,0.12)]"
-          >
-            <span class="w-2 h-2 rounded-full bg-accent-emerald"></span>
-            <span>FAIL-CLOSED | BOUNTY-SAFE</span>
-          </a>
-        </div>
-      </header>
-
-      <!-- Page Body -->
-      <main class="flex-1 p-8 max-w-[1600px] w-full mx-auto space-y-6">
-        <slot />
-      </main>
-
-      <!-- Footer -->
-      <footer class="border-t border-border-grid px-8 py-4 text-xs font-mono text-slate-500 flex items-center justify-between">
-        <div>
-          PenteFino Modular Evidence-Centric Recon & Vulnerability Pipeline • 7-Tier Fail-Closed Scope Engine
-        </div>
-        <div class="flex items-center gap-4">
-          <span>SHA-256 Dual-Hash Evidence</span>
-          <span>•</span>
-          <span>SeaweedFS S3 + Valkey 8 + PostgreSQL 16</span>
-        </div>
-      </footer>
-    </div>
+    <script is:inline>
+      document.getElementById("theme-toggle")?.addEventListener("click", () => {
+        const root = document.documentElement;
+        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        const current = root.dataset.theme || (dark ? "dark" : "light");
+        const next = current === "dark" ? "light" : "dark";
+        root.dataset.theme = next;
+        try {
+          localStorage.setItem("pf-theme", next);
+        } catch (e) {}
+      });
+    </script>
   </body>
 </html>

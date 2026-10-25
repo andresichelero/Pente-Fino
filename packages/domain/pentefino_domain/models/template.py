@@ -16,6 +16,7 @@ class TemplateCatalog(Base):
     __tablename__ = "template_catalog"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     upstream_revision: Mapped[str] = mapped_column(Text, nullable=False)
     bundle_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)

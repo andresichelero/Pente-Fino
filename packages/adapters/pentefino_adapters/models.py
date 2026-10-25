@@ -94,3 +94,97 @@ class ReconResult(BaseModel):
     in_scope_count: int = 0
     resolved_count: int = 0
     live_http_count: int = 0
+
+
+class KatanaEndpointRecord(BaseModel):
+    """Discovered endpoint from Katana crawler."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    endpoint: str
+    url: str = ""
+    path: Optional[str] = None
+    method: str = "GET"
+    status_code: Optional[int] = None
+    technologies: List[str] = Field(default_factory=list)
+    form_data: Optional[Dict[str, Any]] = None
+    is_in_scope: bool = True
+    scope_tier: Optional[PrecedenceTier] = None
+    scope_reason: Optional[str] = None
+    raw_json: Optional[Dict[str, Any]] = None
+
+
+KatanaRecord = KatanaEndpointRecord
+
+
+class TlsCertificateInfo(BaseModel):
+    """Parsed SSL/TLS X.509 certificate metadata."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    subject: str
+    issuer: str
+    serial_number: str
+    not_before: Optional[str] = None
+    not_after: Optional[str] = None
+    days_to_expire: float = 0.0
+    is_expired: bool = False
+    is_self_signed: bool = False
+    san_names: List[str] = Field(default_factory=list)
+    hostname_matches_san: bool = True
+    signature_algorithm: Optional[str] = None
+    fingerprint_sha256: Optional[str] = None
+
+
+class TlsSecurityAnomaly(BaseModel):
+    """Specific security anomaly or finding discovered during TLS audit."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    id: str
+    title: str
+    severity: str  # info, low, medium, high, critical
+    description: str
+    recommendation: Optional[str] = None
+
+
+class TlsAuditResult(BaseModel):
+    """Aggregated result of safe TLS and cipher suite audit."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    host: str
+    port: int = 443
+    supported_protocols: List[str] = Field(default_factory=list)
+    deprecated_protocols: List[str] = Field(default_factory=list)
+    weak_ciphers: List[str] = Field(default_factory=list)
+    selected_cipher: Optional[str] = None
+    certificate_info: Optional[TlsCertificateInfo] = None
+    anomalies: List[TlsSecurityAnomaly] = Field(default_factory=list)
+    error: Optional[str] = None
+    success: bool = True
+
+
+class PassiveFindingRecord(BaseModel):
+    """Security finding or anomaly detected passively from HTTP traffic."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    rule_id: str
+    category: str
+    title: str
+    severity: str  # info, low, medium, high, critical
+    description: str
+    matched_text: Optional[str] = None
+    url: str
+    path: str = "/"
+    status_code: Optional[int] = None
+    dedup_key: str = ""
+    remediation: Optional[str] = None
+    confidence: str = "high"
+    evidence_level: str = "E1"
+    raw_details: Optional[Dict[str, Any]] = None
+
+
+PassiveFinding = PassiveFindingRecord
+

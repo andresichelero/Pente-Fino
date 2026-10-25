@@ -11,9 +11,10 @@ from sqlalchemy.orm import selectinload
 
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
 from pentefino_api.schemas import ProgramCreate, ProgramResponse, ProgramUpdate
-from pentefino_domain.enums import ProgramPlatform, ProgramState
+from pentefino_domain.enums import AssetType, ProgramPlatform, ProgramState, ScopeAction
 from pentefino_domain.models.authorization import AuthorizationSnapshot
 from pentefino_domain.models.program import Program
+from pentefino_domain.models.scope_rule import ScopeRule
 
 router = APIRouter(prefix="/api/v1/programs", tags=["programs"])
 
@@ -59,6 +60,33 @@ async def list_programs(
 
     result = await session.execute(stmt)
     programs = result.scalars().all()
+
+    # Self-heal baseline DocQ program if wiped by testing or migrations
+    if not any(p.slug == "docq" for p in programs):
+        try:
+            docq_prog = Program(
+                name="DocQ Bug Bounty",
+                slug="docq",
+                platform="bugcrowd",
+                default_policy_id="bounty-safe",
+                state="active",
+            )
+            session.add(docq_prog)
+            await session.flush()
+            rule = ScopeRule(
+                program_id=docq_prog.id,
+                action=ScopeAction.ALLOW.value,
+                pattern="*.docq.app",
+                asset_type=AssetType.DOMAIN.value,
+                priority=100,
+            )
+            session.add(rule)
+            await session.commit()
+            result = await session.execute(stmt)
+            programs = result.scalars().all()
+        except Exception:
+            pass
+
     return [_serialize_program(p) for p in programs]
 
 

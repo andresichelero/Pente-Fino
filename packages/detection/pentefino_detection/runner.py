@@ -20,7 +20,7 @@ from pentefino_runner import (
     VolumeMount,
 )
 
-DEFAULT_NUCLEI_IMAGE: str = "projectdiscovery/nuclei:v3.3.7"
+DEFAULT_NUCLEI_IMAGE: str = "projectdiscovery/nuclei:v3.3.5"
 
 
 class HardenedNucleiRunner:
@@ -35,6 +35,7 @@ class HardenedNucleiRunner:
         proxy_url: str = DEFAULT_HTTP_PROXY,
         network: str = DEFAULT_NETWORK,
         timeout_seconds: float = 300.0,
+        rate_limit: int = 1,
     ):
         self.runner = runner
         self.templates_host_dir = Path(templates_host_dir)
@@ -43,27 +44,31 @@ class HardenedNucleiRunner:
         self.proxy_url = proxy_url
         self.network = network
         self.timeout_seconds = timeout_seconds
+        self.rate_limit = rate_limit
 
     def build_run_config(
         self,
         plan: DetectionPlan,
         target_url: str | None = None,
+        rate_limit: int | None = None,
     ) -> RunConfig:
         """Constructs hardened RunConfig with ONLY selected template paths passed via -t."""
         target = target_url or plan.target_url
+        rl_val = str(rate_limit if rate_limit is not None else self.rate_limit)
 
         # Base Nuclei arguments
         command: list[str] = [
             "-u",
             target,
             "-jsonl",
+            "-irr",
             "-o",
             "/tmp/nuclei_output.json",
             "-silent",
             "-stats=false",
             "-no-interactsh",
             "-rate-limit",
-            "1",
+            rl_val,
             "-concurrency",
             "1",
         ]
@@ -107,6 +112,7 @@ class HardenedNucleiRunner:
         plan: DetectionPlan,
         target_url: str | None = None,
         timeout_seconds: float | None = None,
+        rate_limit: int | None = None,
         on_finding: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Executes targeted Nuclei container scan and returns parsed JSON findings."""
@@ -114,7 +120,7 @@ class HardenedNucleiRunner:
         if not plan.selected_template_ids and not plan.selected_template_paths:
             return []
 
-        config = self.build_run_config(plan, target_url=target_url)
+        config = self.build_run_config(plan, target_url=target_url, rate_limit=rate_limit)
         if timeout_seconds is not None:
             config.timeout_seconds = timeout_seconds
 

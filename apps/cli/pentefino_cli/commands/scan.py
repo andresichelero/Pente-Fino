@@ -31,6 +31,14 @@ console = Console(safe_box=True)
 app = typer.Typer(help="Manage and execute targeted vulnerability scans.")
 
 
+async def _current_scope_decision(session, prog, canonical_key: str):
+    """Re-evaluate the asset against the program's current rules and authorization snapshot."""
+    from pentefino_api.scope_loader import evaluate_and_count, load_program_scope_engine
+
+    engine = await load_program_scope_engine(session, prog)
+    return evaluate_and_count(engine, canonical_key)
+
+
 @app.command("run")
 def run_scan(
     ctx: typer.Context,
@@ -78,8 +86,35 @@ def run_scan(
                     "error": f"Asset '{clean_asset}' not found in program '{program}'. Run discovery first."
                 }
 
+            if target_asset.scope_state not in ("in_scope_explicit", "in_scope_derived"):
+                return {
+                    "error": (
+                        f"Hard-Gate Fail-Closed: Asset '{target_asset.canonical_key}' has scope_state="
+                        f"'{target_asset.scope_state}' and cannot be actively scanned."
+                    )
+                }
+
+            # The stored scope_state may predate a new deny rule or an expired snapshot.
+            decision = await _current_scope_decision(session, prog, target_asset.canonical_key)
+            if not decision.allowed:
+                return {
+                    "error": (
+                        f"Hard-Gate Fail-Closed: '{target_asset.canonical_key}' denied by scope engine "
+                        f"({decision.matched_tier.value}: {decision.reason})."
+                    )
+                }
+
             if async_mode:
                 run_id = uuid.uuid4()
+                from pentefino_worker.publisher import default_publisher
+
+                pub_res = await default_publisher.publish_scan_task(
+                    program_slug=prog.slug,
+                    target_asset=target_asset.canonical_key,
+                    severity=severity,
+                    tags=tags,
+                    run_id=run_id,
+                )
                 await record_audit_event(
                     session=session,
                     event_type="cli.scan.dispatch",
@@ -91,6 +126,7 @@ def run_scan(
                         "tags": tags,
                         "severity": severity,
                         "status": "queued",
+                        "broker_published": pub_res.get("broker_published", False),
                     },
                 )
                 await session.commit()
@@ -101,8 +137,11 @@ def run_scan(
                     "asset": target_asset.canonical_key,
                     "tags": tags,
                     "severity": severity,
-                    "message": f"Scan run for {target_asset.canonical_key} dispatched asynchronously.",
+                    "broker_published": pub_res.get("broker_published", False),
+                    "message": pub_res.get("message")
+                    or f"Scan run for {target_asset.canonical_key} dispatched asynchronously.",
                 }
+
 
             # Synchronous Execution
             # 1. Fetch detected technologies from asset observations

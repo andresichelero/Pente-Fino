@@ -46,6 +46,103 @@ class ScopeGuard:
         """Associates a ScopeEngine instance with a specific program ID."""
         self._programs[program_id] = engine
 
+    async def sync_from_db(
+        self, session: Any, program_id: Optional[UUID] = None
+    ) -> None:
+        """
+        Dynamically loads active ScopeRule and AuthorizationSnapshot records from PostgreSQL
+        and updates the in-memory ScopeEngine instances for the specified program_id
+        or for all programs if program_id is None.
+        """
+        from sqlalchemy import select
+        from pentefino_domain.models import AuthorizationSnapshot, Program, ScopeRule
+        from pentefino_scope.enums import (
+            AssetType as ScopeAssetType,
+            ScopeAction as ScopeRuleAction,
+        )
+        from pentefino_scope.models import (
+            AuthorizationSnapshot as ScopeAuthSnapshot,
+            ScopeRule as ScopeEngineRule,
+        )
+
+        if program_id is not None:
+            # Sync single program
+            prog_stmt = select(Program).where(Program.id == program_id)
+            prog_res = await session.execute(prog_stmt)
+            prog = prog_res.scalar_one_or_none()
+
+            rules_stmt = (
+                select(ScopeRule)
+                .where(ScopeRule.program_id == program_id)
+                .order_by(ScopeRule.priority.asc())
+            )
+            rules_res = await session.execute(rules_stmt)
+            db_rules = rules_res.scalars().all()
+
+            auth_stmt = (
+                select(AuthorizationSnapshot)
+                .where(AuthorizationSnapshot.program_id == program_id)
+                .order_by(AuthorizationSnapshot.created_at.desc())
+            )
+            auth_res = await session.execute(auth_stmt)
+            db_auth = auth_res.scalar_one_or_none()
+
+            engine_rules: List[ScopeEngineRule] = []
+            for r in db_rules:
+                try:
+                    engine_rules.append(
+                        ScopeEngineRule(
+                            id=r.id,
+                            program_id=r.program_id,
+                            priority=r.priority,
+                            asset_type=ScopeAssetType(r.asset_type),
+                            pattern=r.pattern,
+                            action=ScopeRuleAction(r.action),
+                            allowed_ports=r.allowed_ports,
+                            denied_paths=r.denied_paths,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("Error parsing scope rule %s: %s", getattr(r, "id", None), e)
+                    continue
+
+            engine_snapshot: Optional[ScopeAuthSnapshot] = None
+            if db_auth:
+                engine_snapshot = ScopeAuthSnapshot(
+                    id=db_auth.id,
+                    program_id=db_auth.program_id,
+                    source_url=db_auth.source_url,
+                    policy_hash=db_auth.policy_hash,
+                    rules_json=db_auth.rules_json,
+                    valid_from=db_auth.valid_from,
+                    valid_until=db_auth.valid_until,
+                )
+
+            env_class = (
+                "lab"
+                if (prog and getattr(prog, "platform", None) == "lab")
+                else self.environment_class
+            )
+            engine = ScopeEngine(
+                snapshot=engine_snapshot,
+                rules=engine_rules,
+                environment_class=env_class,
+            )
+            self.register_engine(program_id, engine)
+        else:
+            # Sync all programs
+            prog_stmt = select(Program.id)
+            prog_res = await session.execute(prog_stmt)
+            prog_ids = [pid for pid in prog_res.scalars().all() if pid]
+
+            if not prog_ids:
+                rule_progs_stmt = select(ScopeRule.program_id).distinct()
+                rule_progs_res = await session.execute(rule_progs_stmt)
+                prog_ids = [pid for pid in rule_progs_res.scalars().all() if pid]
+
+            for pid in prog_ids:
+                await self.sync_from_db(session, program_id=pid)
+
     def get_engine(self, program_id: Optional[UUID] = None) -> ScopeEngine:
         """Resolves the ScopeEngine for the given program or returns the default."""
         if program_id and program_id in self._programs:
@@ -120,6 +217,8 @@ class ScopeGuard:
 
         # Primary Scope Engine evaluation
         decision = engine.evaluate_target(target)
+        if decision.allowed and not decision.resolved_ip and target.resolved_ips:
+            decision.resolved_ip = str(target.resolved_ips[0])
         return decision
 
     def enforce(

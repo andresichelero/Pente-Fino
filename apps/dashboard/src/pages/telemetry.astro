@@ -1,71 +1,12 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
-import LiveProxyStreamer from "../components/islands/LiveProxyStreamer";
-import { API_BASE_URL, WS_BASE_URL } from "../lib/api";
-
-const proxyGuardrails = [
-  {
-    title: "Valkey 8 Token-Bucket Rate Limiter",
-    metric: "0.5 req/s • Concorrência = 1",
-    desc: "Controle por host/programa via Lua script atômico no Valkey 8, com backoff exponencial em respostas 429/503.",
-    badge: "RATE LIMIT",
-    color: "border-cyan-500/30 bg-cyan-950/15 text-accent-cyan",
-  },
-  {
-    title: "Egress Cloaking & Header Normalization",
-    metric: "Desktop User-Agent Rotation",
-    desc: "Remove assinaturas default de scanners (Nuclei/Go-http-client) e rotaciona perfis realistas de navegadores desktop.",
-    badge: "CLOAKING",
-    color: "border-emerald-500/30 bg-emerald-950/15 text-accent-emerald",
-  },
-  {
-    title: "In-Flight Credential Redaction",
-    metric: "Perfil bounty-safe-v1 → [REDACTED]",
-    desc: "Sanitiza Authorization, Cookie, Set-Cookie, X-API-Key, JWTs e AWS Keys em memória antes de persistir no S3 ou banco.",
-    badge: "REDACTION",
-    color: "border-amber-500/30 bg-amber-950/15 text-accent-amber",
-  },
-  {
-    title: "Dual-Hash SeaweedFS S3 Evidence Tap",
-    metric: "original_sha256 + sanitized_sha256",
-    desc: "Calcula o SHA-256 original em memória volátil para cadeia de custódia e grava exclusivamente o payload sanitizado no S3.",
-    badge: "FORENSIC S3",
-    color: "border-purple-500/30 bg-purple-950/15 text-purple-300",
-  },
-];
+import NetworkMonitor from "../components/islands/NetworkMonitor.tsx";
 ---
 
 <BaseLayout
-  title="Telemetria do Egress Proxy & Guarda Anti-SSRF"
-  subtitle="Inspeção em Tempo Real de Tráfego de Saída • Token-Bucket 0.5 req/s, Cloaking & Redação Forense S3"
-  activeNav="telemetry"
+  title="Rede"
+  lead="Ping, jitter, perda e throughput medidos pelo monitor de rede, mais a latência dos serviços internos."
+  active="telemetry"
 >
-  <!-- SSR Architecture Overview of pentefino_proxy -->
-  <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-    {
-      proxyGuardrails.map((g) => (
-        <div class="bg-bg-panel border border-border-grid rounded-xl p-4 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between gap-2 mb-2">
-              <span class:list={["text-[10px] font-mono uppercase px-2 py-0.5 rounded border font-bold", g.color]}>
-                {g.badge}
-              </span>
-              <span class="text-[11px] font-mono text-slate-400">{g.metric}</span>
-            </div>
-            <h2 class="text-sm font-bold text-white font-mono">{g.title}</h2>
-            <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">{g.desc}</p>
-          </div>
-        </div>
-      ))
-    }
-  </section>
-
-  <!-- Interactive Island: LiveProxyStreamer -->
-  <section>
-    <LiveProxyStreamer
-      client:load
-      wsBaseUrl={WS_BASE_URL}
-      apiBaseUrl={API_BASE_URL}
-    />
-  </section>
+  <NetworkMonitor client:only="preact" />
 </BaseLayout>

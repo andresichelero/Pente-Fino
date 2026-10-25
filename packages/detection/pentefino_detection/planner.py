@@ -7,12 +7,14 @@ and supporting severity and tag constraints.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+import re
+from typing import Any, Sequence
 import uuid
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from pentefino_domain.enums import ImpactClass
 from pentefino_domain.models.asset import Asset
@@ -37,7 +39,6 @@ GENERIC_BASELINE_TAGS: set[str] = {
     "ssl",
     "tls",
     "headers",
-    "default-login",
     "config",
     "disclosure",
 }
@@ -81,10 +82,28 @@ class DetectionPlanner:
         db_session: AsyncSession | None = None,
         storage_templates_dir: str | Path = "storage/templates/nuclei-templates",
         templates_container_dir: str = "/templates",
+        enricher: Any | None = None,
     ):
         self.db_session = db_session
         self.storage_templates_dir = Path(storage_templates_dir)
         self.templates_container_dir = templates_container_dir.rstrip("/")
+        self.enricher = enricher if enricher is not None else self._resolve_default_enricher()
+
+    @staticmethod
+    def _resolve_default_enricher() -> Any:
+        try:
+            from pentefino_intel import ThreatIntelEnricher
+            return ThreatIntelEnricher()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_tech_version(tech: str) -> tuple[str, str] | None:
+        """Parses package name and version from strings like 'apache 2.4.49' or 'nginx:1.18.0'."""
+        m = re.match(r"^([a-zA-Z0-9_\-\.]+)[ :\/]([0-9]+(?:\.[0-9]+)*.*)$", tech.strip())
+        if m:
+            return m.group(1).strip().lower(), m.group(2).strip()
+        return None
 
     async def create_plan(
         self,
@@ -139,18 +158,41 @@ class DetectionPlanner:
             t for t in raw_techs if t not in self.EDGE_CDN_WAF_TAGS
         ]
 
+        # Extract versioned packages and query OSV if available
+        osv_cves: set[str] = set()
+        extended_technologies: list[str] = list(clean_technologies)
+        if clean_technologies and self.enricher is not None:
+            for tech in clean_technologies:
+                parsed = self._parse_tech_version(tech)
+                if parsed:
+                    pkg, ver = parsed
+                    if pkg not in extended_technologies:
+                        extended_technologies.append(pkg)
+                    try:
+                        records = await self.enricher.query_osv(pkg, ver)
+                        for r in records:
+                            osv_cves.add(r.id.upper())
+                            for alias in r.aliases:
+                                osv_cves.add(alias.upper())
+                    except Exception:
+                        pass
+
         # 3. Retrieve Candidate Templates
+        allowed_classes = self._get_allowed_impact_classes(max_impact_class)
         if templates is not None:
             candidates = list(templates)
         elif self.db_session is not None:
-            stmt = select(TemplateCatalog)
+            stmt = (
+                select(TemplateCatalog)
+                .options(defer(TemplateCatalog.raw_yaml))
+                .where(func.lower(TemplateCatalog.impact_class).in_(allowed_classes))
+            )
             result = await self.db_session.execute(stmt)
             candidates = list(result.scalars().all())
         else:
             candidates = []
 
         # 4. Tier 1: Impact Hard-Gate Filter
-        allowed_classes = self._get_allowed_impact_classes(max_impact_class)
         tier1_templates: list[TemplateCatalog] = []
         for t in candidates:
             impact = (t.impact_class or "").lower()
@@ -167,15 +209,21 @@ class DetectionPlanner:
         matched_templates: list[TemplateCatalog] = []
         matched_tech_set: set[str] = set()
 
-        if clean_technologies:
+        if extended_technologies or osv_cves:
             for t in tier2_templates:
                 t_techs = {x.strip().lower() for x in (t.technologies or []) if x}
                 t_tags = {x.strip().lower() for x in (t.tags or []) if x}
                 t_id = (t.id or "").lower()
                 t_name = (t.name or "").lower()
+                t_cve = (getattr(t, "cve_id", None) or "").upper()
 
                 matched = False
-                for tech in clean_technologies:
+                # Match against OSV discovered CVEs or advisory aliases
+                if osv_cves and ((t_cve and t_cve in osv_cves) or (t_id.upper() in osv_cves)):
+                    matched = True
+                    matched_tech_set.add(t_cve or t_id)
+
+                for tech in extended_technologies:
                     # Match on technologies list, tags list, or substring in template id/name
                     if (
                         tech in t_techs
@@ -229,16 +277,52 @@ class DetectionPlanner:
                 if bool({x.strip().lower() for x in (t.tags or [])} & req_tags)
             ]
 
-        # 8. Deduplicate and Construct Template Paths
+        # 8. Threat Intel Prioritization (CISA KEV and high EPSS elevated execution priority)
+        prioritized_templates = []
+        for idx, t in enumerate(final_templates):
+            cve = getattr(t, "cve_id", None)
+            if not cve and t.id:
+                m = re.search(r"CVE-\d{4}-\d{4,}", t.id, re.IGNORECASE)
+                if m:
+                    cve = m.group(0).upper()
+
+            rank = 4
+            epss_val = 0.0
+            if cve and self.enricher is not None:
+                try:
+                    res = await self.enricher.enrich_cve(cve)
+                    epss_val = res.epss_score
+                    if res.in_cisa_kev or res.priority_tier == "critical_kev":
+                        rank = 0
+                    elif res.priority_tier == "high_epss" or epss_val >= 0.50:
+                        rank = 1
+                    elif res.priority_tier == "elevated" or epss_val >= 0.10:
+                        rank = 2
+                    else:
+                        rank = 3
+                except Exception:
+                    kev_set = getattr(self.enricher, "_kev_set", set())
+                    if cve in kev_set:
+                        rank = 0
+                    else:
+                        rank = 3
+            prioritized_templates.append((rank, -epss_val, idx, t))
+
+        # Sort: rank 0 (critical_kev), then rank 1 (high_epss), then rank 2, then rank 3, then rank 4
+        prioritized_templates.sort(key=lambda x: (x[0], x[1], x[2]))
+        sorted_templates = [item[3] for item in prioritized_templates]
+
+        # 9. Deduplicate and Construct Template Paths
         seen_ids: set[str] = set()
         selected_ids: list[str] = []
         selected_paths: list[str] = []
 
-        for t in final_templates:
+        for t in sorted_templates:
             if t.id not in seen_ids:
                 seen_ids.add(t.id)
                 selected_ids.append(t.id)
-                path_suffix = t.id if t.id.endswith((".yaml", ".yml")) else f"{t.id}.yaml"
+                raw_rel = getattr(t, "file_path", None) or t.id
+                path_suffix = raw_rel if raw_rel.endswith((".yaml", ".yml")) else f"{raw_rel}.yaml"
                 if not path_suffix.startswith("/"):
                     container_path = f"{self.templates_container_dir}/{path_suffix}"
                 else:

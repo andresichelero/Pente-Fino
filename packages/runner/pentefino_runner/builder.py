@@ -9,6 +9,7 @@ from pentefino_runner.config import (
     ENV_NETWORK_VAR,
     FALLBACK_NETWORK,
     RunConfig,
+    validate_image_digest,
 )
 
 
@@ -20,10 +21,14 @@ class DockerCommandBuilder:
         engine_bin: str = "docker",
         default_network: str = DEFAULT_NETWORK,
         fallback_network: str = FALLBACK_NETWORK,
+        strict_digest: bool = False,
     ):
         self.engine_bin = engine_bin
         self.default_network = default_network
         self.fallback_network = fallback_network
+        self.strict_digest = strict_digest or (
+            os.getenv("PENTEFINO_STRICT_DIGEST", "false").lower() in ("1", "true", "yes")
+        )
 
     def resolve_network(
         self,
@@ -44,8 +49,18 @@ class DockerCommandBuilder:
         self,
         config: RunConfig,
         use_network_fallback: bool = False,
+        strict_digest: Optional[bool] = None,
     ) -> List[str]:
         """Build the full CLI command for docker/podman run."""
+        # Enforce image digest validation if strict mode is active
+        should_validate = (
+            strict_digest
+            if strict_digest is not None
+            else (getattr(config, "strict_digest_validation", False) or self.strict_digest)
+        )
+        if should_validate:
+            validate_image_digest(config.image, raise_exc=True)
+
         cmd: List[str] = [self.engine_bin, "run", "--rm"]
 
         # Container Name

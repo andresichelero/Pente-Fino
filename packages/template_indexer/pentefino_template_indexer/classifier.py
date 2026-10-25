@@ -12,6 +12,7 @@ class TemplateMetadata(BaseModel):
     """Normalized metadata and static impact classification for a Nuclei template."""
 
     id: str
+    file_path: str | None = None
     name: str
     protocol: str
     http_methods: list[str] = Field(default_factory=list)
@@ -44,6 +45,20 @@ INTRUSIVE_TAGS = {
     "denial-of-service",
 }
 INTRUSIVE_ATTACK_TYPES = {"clusterbomb", "pitchfork", "batteringram"}
+
+# Active injection / OAST / default-credential tags requiring ACTIVE_REVIEWED gate
+ACTIVE_PROBE_TAGS = {
+    "sqli",
+    "rce",
+    "rfi",
+    "xxe",
+    "ssti",
+    "oast",
+    "interactsh",
+    "default-login",
+    "auth-bypass",
+    "injection",
+}
 
 # Mutating HTTP methods
 MUTATING_METHODS = {"PUT", "DELETE", "PATCH"}
@@ -153,12 +168,30 @@ KNOWN_TECHNOLOGIES = {
 class StaticTemplateClassifier:
     """Inspects Nuclei template YAML definitions and deterministically classifies impact."""
 
-    def classify_file(self, file_path: Path | str) -> TemplateMetadata:
+    def classify_file(
+        self, file_path: Path | str, root_dir: Path | str | None = None
+    ) -> TemplateMetadata:
         path = Path(file_path)
         raw_yaml = path.read_text(encoding="utf-8")
-        return self.classify_yaml(raw_yaml, base_dir=path.parent)
+        rel_path: str | None = None
+        if root_dir is not None:
+            try:
+                rel_path = path.resolve().relative_to(Path(root_dir).resolve()).as_posix()
+            except ValueError:
+                rel_path = path.name
+        elif "nuclei-templates" in path.parts:
+            idx = path.parts.index("nuclei-templates")
+            rel_path = "/".join(path.parts[idx + 1 :])
+        else:
+            rel_path = path.name
+        return self.classify_yaml(raw_yaml, base_dir=path.parent, file_path=rel_path)
 
-    def classify_yaml(self, raw_yaml: str, base_dir: Path | None = None) -> TemplateMetadata:
+    def classify_yaml(
+        self,
+        raw_yaml: str,
+        base_dir: Path | None = None,
+        file_path: str | None = None,
+    ) -> TemplateMetadata:
         if not raw_yaml or not raw_yaml.strip():
             raise ValueError("Template YAML is empty")
 
@@ -211,6 +244,7 @@ class StaticTemplateClassifier:
 
         return TemplateMetadata(
             id=template_id,
+            file_path=file_path,
             name=name,
             protocol=protocol,
             http_methods=http_methods,
@@ -447,6 +481,11 @@ class StaticTemplateClassifier:
 
         # 5. Pure Read-Only HTTP: GET, HEAD, OPTIONS
         if protocol == "http":
+            if any(t in ACTIVE_PROBE_TAGS for t in tags):
+                return ImpactClass.ACTIVE_REVIEWED
+            raw_http_str = str(raw_http).lower()
+            if "interactsh-url" in raw_http_str or "{{interactsh" in raw_http_str:
+                return ImpactClass.ACTIVE_REVIEWED
             if not http_methods or all(m in ("GET", "HEAD", "OPTIONS") for m in http_methods):
                 return ImpactClass.SAFE_READ_ONLY
             return ImpactClass.ACTIVE_REVIEWED

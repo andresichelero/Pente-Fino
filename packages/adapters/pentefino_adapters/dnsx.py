@@ -62,9 +62,15 @@ class DnsxAdapter:
         volumes: List[VolumeMount] = []
 
         if bruteforce:
-            target_domain = domain or (hosts[0] if hosts else None)
-            if target_domain:
-                command.extend(["-d", target_domain])
+            target_domains: list[str] = []
+            if domain:
+                target_domains.append(domain)
+            if hosts:
+                for h in hosts:
+                    if h not in target_domains:
+                        target_domains.append(h)
+            for td in target_domains:
+                command.extend(["-d", td])
 
             raw_wl = wordlist_path if wordlist_path is not None else DEFAULT_WORDLIST_PATH
             wl_path = Path(raw_wl)

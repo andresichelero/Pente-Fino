@@ -44,6 +44,7 @@ class TemplateCatalogIngester:
                 batch_data.append(
                     {
                         "id": t.id,
+                        "file_path": t.file_path,
                         "upstream_revision": upstream_revision,
                         "bundle_hash": t.bundle_hash,
                         "name": t.name,
@@ -79,6 +80,7 @@ class TemplateCatalogIngester:
             stmt = stmt.on_conflict_do_update(
                 index_elements=[TemplateCatalog.id],
                 set_={
+                    "file_path": stmt.excluded.file_path,
                     "upstream_revision": stmt.excluded.upstream_revision,
                     "bundle_hash": stmt.excluded.bundle_hash,
                     "name": stmt.excluded.name,
@@ -103,6 +105,7 @@ class TemplateCatalogIngester:
             stmt = stmt.on_conflict_do_update(
                 index_elements=[TemplateCatalog.id],
                 set_={
+                    "file_path": stmt.excluded.file_path,
                     "upstream_revision": stmt.excluded.upstream_revision,
                     "bundle_hash": stmt.excluded.bundle_hash,
                     "name": stmt.excluded.name,

@@ -1,0 +1,22 @@
+# PenteFino Hardened Ephemeral Runner: httpx
+# Security profile: non-root (10001:10001), read-only rootfs compatible, minimal attack surface
+
+FROM golang:1.23-alpine@sha256:74530058b83dd4ee066cf640eb25c56782ff1a8c9bfa780d6f4618e87ad6ea01 AS builder
+
+RUN apk add --no-cache git ca-certificates
+RUN CGO_ENABLED=0 go install -ldflags="-s -w -extldflags '-static'" -v github.com/projectdiscovery/httpx/cmd/httpx@v1.6.8
+
+FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737138cd139cc901f8876fb922
+
+RUN apk add --no-cache ca-certificates \
+    && addgroup -g 10001 -S pentefino \
+    && adduser -u 10001 -S pentefino -G pentefino -s /sbin/nologin \
+    && mkdir -p /tmp /home/pentefino/.config/httpx \
+    && chown -R 10001:10001 /tmp /home/pentefino
+
+COPY --from=builder /go/bin/httpx /usr/local/bin/httpx
+
+USER 10001:10001
+WORKDIR /tmp
+
+ENTRYPOINT ["/usr/local/bin/httpx"]

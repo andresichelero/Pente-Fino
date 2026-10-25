@@ -10,7 +10,6 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from sqlalchemy import select
 
 from pentefino_adapters import (
     DnsxAdapter,
@@ -21,18 +20,9 @@ from pentefino_adapters import (
 from pentefino_cli.db import get_program_by_slug, record_audit_event, run_async
 from pentefino_cli.formatters.json_output import print_json
 from pentefino_cli.formatters.tables import print_error
-from pentefino_domain.models import AuthorizationSnapshot, ScopeRule
 from pentefino_domain.session import get_async_session
 from pentefino_runner import EphemeralRunner
 from pentefino_scope.engine import ScopeEngine
-from pentefino_scope.enums import (
-    AssetType as ScopeAssetType,
-    ScopeAction as ScopeRuleAction,
-)
-from pentefino_scope.models import (
-    AuthorizationSnapshot as ScopeAuthSnapshot,
-    ScopeRule as ScopeEngineRule,
-)
 
 logger = logging.getLogger(__name__)
 console = Console(safe_box=True)
@@ -41,59 +31,10 @@ app = typer.Typer(help="Manage and execute reconnaissance workflows.")
 
 
 async def _load_scope_engine(session, prog) -> ScopeEngine:
-    """Load ScopeEngine instance populated with active rules and authorization for program."""
-    rules_stmt = (
-        select(ScopeRule)
-        .where(ScopeRule.program_id == prog.id)
-        .order_by(ScopeRule.priority.asc())
-    )
-    rules_res = await session.execute(rules_stmt)
-    db_rules = rules_res.scalars().all()
+    """Shared fail-closed loader (newest snapshot; tolerates several snapshots per program)."""
+    from pentefino_api.scope_loader import load_program_scope_engine
 
-    auth_stmt = (
-        select(AuthorizationSnapshot)
-        .where(AuthorizationSnapshot.program_id == prog.id)
-        .order_by(AuthorizationSnapshot.created_at.desc())
-    )
-    auth_res = await session.execute(auth_stmt)
-    db_auth = auth_res.scalar_one_or_none()
-
-    engine_rules: list[ScopeEngineRule] = []
-    for r in db_rules:
-        try:
-            engine_rules.append(
-                ScopeEngineRule(
-                    id=r.id,
-                    program_id=r.program_id,
-                    priority=r.priority,
-                    asset_type=ScopeAssetType(r.asset_type),
-                    pattern=r.pattern,
-                    action=ScopeRuleAction(r.action),
-                    allowed_ports=r.allowed_ports,
-                    denied_paths=r.denied_paths,
-                )
-            )
-        except Exception:
-            continue
-
-    engine_snapshot: Optional[ScopeAuthSnapshot] = None
-    if db_auth:
-        engine_snapshot = ScopeAuthSnapshot(
-            id=db_auth.id,
-            program_id=db_auth.program_id,
-            source_url=db_auth.source_url,
-            policy_hash=db_auth.policy_hash,
-            rules_json=db_auth.rules_json,
-            valid_from=db_auth.valid_from,
-            valid_until=db_auth.valid_until,
-        )
-
-    env_class = "lab" if getattr(prog, "platform", None) == "lab" else "bounty"
-    return ScopeEngine(
-        snapshot=engine_snapshot,
-        rules=engine_rules,
-        environment_class=env_class,
-    )
+    return await load_program_scope_engine(session, prog)
 
 
 @app.command("run")
@@ -129,6 +70,14 @@ def run_recon(
 
             if async_mode:
                 task_id = uuid.uuid4()
+                from pentefino_worker.publisher import default_publisher
+
+                pub_res = await default_publisher.publish_recon_task(
+                    program_slug=prog.slug,
+                    domain=clean_domain,
+                    bruteforce=bruteforce,
+                    run_id=task_id,
+                )
                 await record_audit_event(
                     session=session,
                     event_type="cli.recon.dispatch",
@@ -139,6 +88,7 @@ def run_recon(
                         "domain": clean_domain,
                         "bruteforce": bruteforce,
                         "status": "queued",
+                        "broker_published": pub_res.get("broker_published", False),
                     },
                 )
                 await session.commit()
@@ -148,8 +98,11 @@ def run_recon(
                     "program": prog.slug,
                     "domain": clean_domain,
                     "bruteforce": bruteforce,
-                    "message": f"Recon task for {clean_domain} dispatched asynchronously.",
+                    "broker_published": pub_res.get("broker_published", False),
+                    "message": pub_res.get("message")
+                    or f"Recon task for {clean_domain} dispatched asynchronously.",
                 }
+
 
             # Synchronous pipeline execution
             scope_engine = await _load_scope_engine(session, prog)

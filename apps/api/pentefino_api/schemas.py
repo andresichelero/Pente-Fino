@@ -136,6 +136,7 @@ class TemplateSummaryItem(BaseModel):
     id: str
     name: str
     protocol: str
+    http_methods: list[str] | None = None
     impact_class: str
     severity: str | None = None
     cve_id: str | None = None
@@ -144,10 +145,15 @@ class TemplateSummaryItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     upstream_revision: str
     bundle_hash: str
+    raw_yaml: str | None = None
+    updated_at: str | None = None
 
 
 class TemplateListResponse(BaseModel):
     total: int
+    page: int = 1
+    page_size: int = 25
+    total_pages: int = 1
     items: list[TemplateSummaryItem] = Field(default_factory=list)
 
 
@@ -201,8 +207,9 @@ class ScanPlanResponse(BaseModel):
 class ScanRunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    plan_id: str | None = None
     program_slug: str
-    asset_key: str
+    asset_key: str = Field(min_length=1, max_length=2048)
     severity: str | None = None
     tags: str | None = None
     mode: str = "auto"
@@ -234,6 +241,76 @@ class ScanHistoryItem(BaseModel):
     occurred_at: str
     timestamp: str
 
+
+
+class ReconRunRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    program_slug: str
+    domain: str = Field(min_length=1, max_length=253)
+    # Optional client-chosen id so the caller can subscribe to /ws/scans/{task_id} before starting.
+    task_id: str | None = Field(default=None, pattern=r"^recon-[a-z0-9-]{4,40}$")
+    bruteforce: bool = False
+    subfinder_flags: dict[str, Any] = Field(default_factory=dict)
+    dnsx_flags: dict[str, Any] = Field(default_factory=dict)
+    httpx_flags: dict[str, Any] = Field(default_factory=dict)
+    naabu_flags: dict[str, Any] = Field(default_factory=dict)
+    tlsx_flags: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReconRunResponse(BaseModel):
+    task_id: str | None = None
+    domain: str
+    program_slug: str
+    total_discovered: int
+    in_scope_count: int
+    out_of_scope_count: int
+    resolved_count: int
+    live_http_count: int
+    sample_assets: list[str] = Field(default_factory=list)
+    message: str
+
+
+class BatchScanRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    program_slug: str
+    severity: str | None = None
+    tags: str | None = None
+    rate_limit: int = Field(default=10, ge=1, le=15)
+    concurrency: int = Field(default=5, ge=1, le=5)
+    mode: str = "auto"
+    max_assets: int = Field(default=100, ge=1, le=500)
+    nuclei_flags: dict[str, Any] = Field(default_factory=dict)
+
+
+class BatchScanAssetSummary(BaseModel):
+    asset_key: str
+    matched_technologies: list[str] = Field(default_factory=list)
+    total_templates: int
+    findings_count: int = 0
+    status: str
+
+
+class BatchScanResponse(BaseModel):
+    program_slug: str
+    total_assets_scanned: int
+    total_templates_executed: int
+    total_findings_discovered: int
+    rate_limit_enforced: str
+    concurrency_enforced: int = 5
+    assets: list[BatchScanAssetSummary] = Field(default_factory=list)
+    message: str
+
+
+class SentinelDomainResetRequest(BaseModel):
+    domain: str
+
+
+class SentinelStatusResponse(BaseModel):
+    total_monitored: int
+    blocked_count: int
+    domains: dict[str, Any]
 
 
 class EvidenceItemSchema(BaseModel):
@@ -277,6 +354,10 @@ class FindingListItem(BaseModel):
     dedup_key: str
     first_seen: str
     last_seen: str
+    epss_score: float | None = None
+    epss_percentile: float | None = None
+    in_cisa_kev: bool = False
+    priority_tier: str = "standard"
     asset: AssetInfoSchema | None = None
     detector: DetectorInfoSchema | None = None
 

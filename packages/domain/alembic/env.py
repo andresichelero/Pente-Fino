@@ -35,9 +35,11 @@ def get_url() -> str:
         "DATABASE_URL",
         config.get_main_option(
             "sqlalchemy.url",
-            "postgresql+asyncpg://pentefino:pentefino_secure_pass@localhost:5432/pentefino",
+            "postgresql+asyncpg://pentefino:pentefino_secure_pass@127.0.0.1:5432/pentefino",
         ),
     )
+    if os.name == "nt" and "@localhost" in url:
+        url = url.replace("@localhost", "@127.0.0.1")
     # Ensure async driver for postgresql
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)

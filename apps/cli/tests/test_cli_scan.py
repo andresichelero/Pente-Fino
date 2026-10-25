@@ -37,6 +37,14 @@ def sample_asset(sample_program: Program) -> Asset:
     )
 
 
+@pytest.fixture(autouse=True)
+def _scope_allows_by_default():
+    """Session mocks here cannot feed a real ScopeEngine; scope gating has its own tests."""
+    allowed = MagicMock(allowed=True)
+    with patch("pentefino_cli.commands.scan._current_scope_decision", AsyncMock(return_value=allowed)):
+        yield
+
+
 def test_scan_help(runner: CliRunner) -> None:
     """Verify scan and scan run help outputs contain expected options."""
     res = runner.invoke(app, ["scan", "--help"])
@@ -336,3 +344,20 @@ def test_scan_no_findings_detected(
         res = runner.invoke(app, ["scan", "run", "-p", sample_program.slug, "-a", sample_asset.canonical_key])
         assert res.exit_code == 0
         assert "No vulnerabilities detected" in res.output
+
+
+def test_scan_refuses_asset_denied_by_current_scope(
+    runner: CliRunner, sample_program: Program, sample_asset: Asset
+) -> None:
+    """A stored in_scope state is not enough: the engine is consulted on every run."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = sample_asset
+    mock_session.execute.return_value = mock_result
+    mock_get_async_session = MagicMock()
+    mock_get_async_session.return_value.__aenter__.return_value = mock_session
+    denied = MagicMock(allowed=False, reason="EXPLICIT_DENY_RULE_MATCHED")
+    denied.matched_tier.value = "explicit_deny"
+    with patch("pentefino_cli.commands.scan.get_async_session", mock_get_async_session),          patch("pentefino_cli.commands.scan.get_program_by_slug", AsyncMock(return_value=sample_program)),          patch("pentefino_cli.commands.scan._current_scope_decision", AsyncMock(return_value=denied)):
+        result = runner.invoke(app, ["scan", "run", "--program", sample_program.slug, "--asset", sample_asset.canonical_key])
+    assert "denied by scope engine" in result.stdout

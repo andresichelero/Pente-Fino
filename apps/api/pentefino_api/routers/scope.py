@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pentefino_api.scope_loader import evaluate_and_count
 from pentefino_api.deps import get_db_session, get_program_or_404, record_api_audit
 from pentefino_api.schemas import (
     ScopeEvaluateRequest,
@@ -313,7 +314,7 @@ async def evaluate_scope_target(
             payload.path if payload.path.startswith("/") else f"/{payload.path}"
         )
 
-    decision = engine.evaluate_target(scope_target)
+    decision = evaluate_and_count(engine, scope_target)
     scope_state = _tier_to_scope_state(decision.matched_tier, decision.allowed)
 
     return ScopeEvaluateResponse(

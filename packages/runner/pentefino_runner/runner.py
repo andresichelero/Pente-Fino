@@ -25,9 +25,18 @@ class EphemeralRunner:
         self,
         engine: Optional[str] = None,
         builder: Optional[DockerCommandBuilder] = None,
+        strict_digest: bool = False,
     ):
+        import os
+
         self.engine_bin = engine or self._detect_engine()
-        self.builder = builder or DockerCommandBuilder(engine_bin=self.engine_bin)
+        self.strict_digest = strict_digest or (
+            os.getenv("PENTEFINO_STRICT_DIGEST", "false").lower() in ("1", "true", "yes")
+        )
+        self.builder = builder or DockerCommandBuilder(
+            engine_bin=self.engine_bin,
+            strict_digest=self.strict_digest,
+        )
 
     @staticmethod
     def _detect_engine() -> str:
@@ -62,6 +71,7 @@ class EphemeralRunner:
         stderr_callback: Optional[Callable[[str], None]] = None,
         check: bool = False,
         raise_on_timeout: bool = True,
+        strict_digest: Optional[bool] = None,
     ) -> RunResult:
         """Execute a container run asynchronously with non-blocking streaming and timeout enforcement."""
         cb_stdout = on_stdout or stdout_callback
@@ -70,7 +80,7 @@ class EphemeralRunner:
         if not config.container_name:
             config.container_name = f"pentefino_run_{uuid.uuid4().hex[:12]}"
 
-        cmd = self.builder.build_run_command(config)
+        cmd = self.builder.build_run_command(config, strict_digest=strict_digest)
         start_time = time.monotonic()
 
         try:
@@ -136,6 +146,12 @@ class EphemeralRunner:
 
             try:
                 await asyncio.wait_for(read_tasks, timeout=1.0)
+            except asyncio.CancelledError:
+                # Re-raise only if *this* task was cancelled from outside;
+                # otherwise it is the inner reader gather being torn down.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
             except (asyncio.TimeoutError, Exception):
                 pass
 
